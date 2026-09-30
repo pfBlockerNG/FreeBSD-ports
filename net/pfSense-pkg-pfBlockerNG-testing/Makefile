@@ -1,5 +1,5 @@
 PORTNAME=	pfSense-pkg-pfBlockerNG-testing
-PORTVERSION=	3.3.3.a1
+PORTVERSION=	3.3.10.a1
 CATEGORIES=	net
 
 MAINTAINER=	coreteam@pfsense.org
