@@ -165,9 +165,9 @@ do-install:
 	${INSTALL_DATA} ${WRKSRC}${PREFIX}/www/widgets/javascript/pfblockerng.js \
 		${STAGEDIR}${PREFIX}/www/widgets/javascript
 	${INSTALL_DATA} ${WRKSRC}${PREFIX}/www/wizards/pfblockerng_wizard.xml \
-		${STAGEDIR}${PREFIX}/www/wizards/pfblockerng_wizard.xml
+		${STAGEDIR}${PREFIX}/www/wizards
 	${INSTALL_DATA} ${WRKSRC}${PREFIX}/www/wizards/pfblockerng_wizard.inc \
-		${STAGEDIR}${PREFIX}/www/wizards/pfblockerng_wizard.inc
+		${STAGEDIR}${PREFIX}/www/wizards
 	${INSTALL_DATA} ${WRKSRC}${PREFIX}/pkg/pfblockerng/dnsbl_* \
 		${STAGEDIR}${PREFIX}/pkg/pfblockerng
 	${INSTALL_DATA} ${WRKSRC}${PREFIX}/pkg/pfblockerng/shallalist_global_usage \
