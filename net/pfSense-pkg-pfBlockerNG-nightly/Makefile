@@ -18,20 +18,29 @@ RUN_DEPENDS=	${LOCALBASE}/bin/mmdblookup:net/libmaxminddb \
 		${PYTHON_PKGNAMEPREFIX}maxminddb>0:net/py-maxminddb@${PY_FLAVOR} \
 		${PYTHON_PKGNAMEPREFIX}charset-normalizer>0:textproc/py-charset-normalizer@${PY_FLAVOR}
 
-USES=		php python
+USES=		go:1.26+,modules,no_targets php python
 
 NO_ARCH=	yes
+# One static FreeBSD pfb-dns per architecture; dns_proxy/pfb_dns.sh picks this machine's at run time.
+NO_ARCH_IGNORE=	pfb-dns
 
 CONFLICTS=	pfSense-pkg-pfBlockerNG pfSense-pkg-pfBlockerNG-testing pfSense-pkg-pfBlockerNG-edge
 
 USE_PHP=	intl
-NO_BUILD=	yes
 NO_MTREE=	yes
+# Ship the bytes do-build checked (go already strips with -ldflags "-s -w").
+STRIP=
 
 USE_GITHUB=	yes
 GH_ACCOUNT=	pfBlockerNG
 GH_PROJECT=	pfBlockerNG
 GH_TAGNAME=	v${PORTVERSION}
+# go/pfb_dns_gateway's vendored modules (files/modules.txt); the module sits beside src/ (= WRKSRC).
+GH_TUPLE=	golang:crypto:v0.54.0:golang_crypto/../go/pfb_dns_gateway/vendor/golang.org/x/crypto \
+		golang:net:v0.56.0:golang_net/../go/pfb_dns_gateway/vendor/golang.org/x/net \
+		golang:sys:v0.47.0:golang_sys/../go/pfb_dns_gateway/vendor/golang.org/x/sys \
+		pires:go-proxyproto:v0.15.0:pires_go_proxyproto/../go/pfb_dns_gateway/vendor/github.com/pires/go-proxyproto \
+		quic-go:quic-go:v0.64.0:quic_go_quic_go/../go/pfb_dns_gateway/vendor/github.com/quic-go/quic-go
 DIST_SUBDIR=	${PORTNAME}
 
 # GitHub extracts to <project>-<version>/; production files live under src/
@@ -54,6 +63,11 @@ post-extract:
 	@mv ${WRKSRC}/usr/local/share/pfSense-pkg-pfBlockerNG \
 		${WRKSRC}/usr/local/share/${PORTNAME}
 
+do-build:
+	(cd ${WRKSRC:H} && ${SETENVI} ${WRK_ENV} ${GO_ENV} ${PYTHON_CMD} scripts/build-pfb-dns.py \
+		--source-root . --out-dir ${WRKDIR}/pfb-dns --go ${GO_CMD} --vendored \
+		--modules-txt ${FILESDIR}/modules.txt --freebsd-major ${OSREL:R})
+
 do-install:
 	(cd ${WRKSRC} && ${COPYTREE_SHARE} . ${STAGEDIR})
 	${MKDIR} ${STAGEDIR}/etc/inc/priv
@@ -68,6 +82,12 @@ do-install:
 	${MKDIR} ${STAGEDIR}${PREFIX}/www/shortcuts
 	${MKDIR} ${STAGEDIR}/var/unbound
 	${MKDIR} ${STAGEDIR}${DATADIR}
+	${MKDIR} ${STAGEDIR}${PREFIX}/pkg/pfblockerng/dns_proxy/bin/freebsd-amd64 \
+		${STAGEDIR}${PREFIX}/pkg/pfblockerng/dns_proxy/bin/freebsd-arm64
+	${INSTALL_PROGRAM} ${WRKDIR}/pfb-dns/freebsd-amd64/pfb-dns \
+		${STAGEDIR}${PREFIX}/pkg/pfblockerng/dns_proxy/bin/freebsd-amd64
+	${INSTALL_PROGRAM} ${WRKDIR}/pfb-dns/freebsd-arm64/pfb-dns \
+		${STAGEDIR}${PREFIX}/pkg/pfblockerng/dns_proxy/bin/freebsd-arm64
 	${INSTALL_SCRIPT} ${WRKSRC}${PREFIX}/etc/rc.d/pfblockerng_repo_generate.sh \
 		${STAGEDIR}${PREFIX}/etc/rc.d
 	${INSTALL_SCRIPT} ${WRKSRC}${PREFIX}/pkg/pfblockerng/*.sh \
