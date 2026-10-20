@@ -49,7 +49,7 @@ PLIST_DIRS=	/var/unbound /etc/inc/priv /etc/inc
 post-extract:
 	@${SED} -i '' 's|%%PKGNAME%%|${PORTNAME:S/pfSense-pkg-//}|g' \
 		${WRKSRC}/usr/local/share/pfSense-pkg-pfBlockerNG/info.xml
-	@${REINPLACE_CMD} -e 's|%%PYTHON_SUFFIX%%|${PYTHON_SUFFIX}|g' \
+	@${REINPLACE_CMD} -i '' -e 's|%%PYTHON_SUFFIX%%|${PYTHON_SUFFIX}|g' \
 		${WRKSRC}/usr/local/pkg/pfblockerng/pfb_python.sh
 	@mv ${WRKSRC}/usr/local/share/pfSense-pkg-pfBlockerNG \
 		${WRKSRC}/usr/local/share/${PORTNAME}
