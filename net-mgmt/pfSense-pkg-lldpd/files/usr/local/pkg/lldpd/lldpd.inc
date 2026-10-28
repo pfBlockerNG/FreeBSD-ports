@@ -145,6 +145,9 @@ function lldpd_sync_config() {
 	if ($lldpd_config['receiveonly'] == 'yes') {
 		$cmd .= ' -r';
 	} else {
+		/* System description: short product string instead of the uname build string */
+		$cmd .= ' -S ' . escapeshellarg(g_get('product_label') . ' ' . g_get('product_version_string'));
+
 		/* Chassis interface */
 		$chassis_int = get_parent_physical_interface($lldpd_config['chassis']);
 		if (!empty($int_switch) && empty(array_diff($int_switch, $chassis_int))) {
@@ -176,8 +179,8 @@ function lldpd_sync_config() {
 	}
 
 	/* Write the rc script */
-	$start = "	$cmd";
-	$stop = "	/usr/bin/killall -q lldpd";
+	$start = "$cmd";
+	$stop = "/usr/bin/killall -q lldpd";
 	write_rcfile(array(
 		"file" => "lldpd.sh",
 		"start" => $start,
