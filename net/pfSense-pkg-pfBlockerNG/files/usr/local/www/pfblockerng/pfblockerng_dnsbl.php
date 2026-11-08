@@ -664,6 +664,7 @@ $tab_array[]	= array(gettext('Reports'),	false,	"/pfblockerng/pfblockerng_alerts
 $tab_array[]	= array(gettext('Feeds'),	false,	'/pfblockerng/pfblockerng_feeds.php');
 $tab_array[]	= array(gettext('Logs'),	false,	'/pfblockerng/pfblockerng_log.php');
 $tab_array[]	= array(gettext('Sync'),	false,	'/pfblockerng/pfblockerng_sync.php');
+if (function_exists('pfb_software_add_tab')) { pfb_software_add_tab($tab_array); }
 display_top_tabs($tab_array, true);
 
 $tab_array	= array();
@@ -2914,6 +2915,7 @@ $section->addInput(new Form_StaticText(
 	'When IPs are found in any Domain based Feed, these IPs will be added to the <strong>pfB_DNSBL_IP</strong> IP Aliastable and<br />'
 	. ' a firewall rule will be added to block those IPs.<br /><br />'
 	. '<span class="text-danger">Note: </span>To utilize this feature, select the appropriate List Action and define the Inbound/Outbound Interfaces in the <strong>IP Tab</strong>.'
+	. '<br /><br />In a High Availability pair where pfSense synchronizes Firewall rules and the Sync tab\'s "Disable General/IP/DNSBL tab settings sync" is selected, configure DNSBL IP identically on both nodes (see the <strong>Sync Tab</strong>).'
 ));
 
 $list_action_text = 'Default: <strong>Disabled</strong>
