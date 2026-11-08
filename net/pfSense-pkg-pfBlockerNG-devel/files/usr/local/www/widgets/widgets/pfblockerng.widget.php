@@ -31,9 +31,17 @@
  * limitations under the License.
  */
 
-$nocsrf = true;
-@require_once('/usr/local/www/widgets/include/widget-pfblockerng.inc');
-@require_once('/usr/local/pkg/pfblockerng/pfblockerng.inc');
+$nocsrf = TRUE;
+$pfb_widget_include = '/usr/local/www/widgets/include/widget-pfblockerng.inc';
+if (!file_exists($pfb_widget_include)) {
+	$pfb_widget_include = dirname(__DIR__) . '/include/widget-pfblockerng.inc';
+}
+@require_once($pfb_widget_include);
+$pfb_widget_pkg_include = '/usr/local/pkg/pfblockerng/pfblockerng.inc';
+if (!file_exists($pfb_widget_pkg_include)) {
+	$pfb_widget_pkg_include = dirname(__DIR__, 3) . '/pkg/pfblockerng/pfblockerng.inc';
+}
+@require_once($pfb_widget_pkg_include);
 @require_once('guiconfig.inc');
 
 pfb_global();
@@ -41,13 +49,13 @@ pfb_global();
 // Image source definition
 $pfb['down']	= '<i class="fa-solid fa-turn-down" title="No Rules are Defined using this Alias"></i>';
 $pfb['up']	= '<i class="fa-solid fa-turn-up text-success" title="Rules are Defined using this Alias (# of fw rules defined)"></i>';
-$pfb['err']	= '<i class="fa-solid fa-minus-circle text-danger" title="pf Errors found."></i>';
+$pfb['err']	= '<i class="fa-solid fa-minus-circle text-danger" title="No pfB_ tables were found in the firewall."></i>';
 
 // Widget customizations
-$wglobal_array = array ('popup' => 'off', 'sortcolumn' => 'none', 'sortmix' => 'off', 'sortdir' => 'asc', 'dnsblquery' => 5,
-			'maxfails' => 3, 'maxheight' => 2500, 'clearip' => 'never', 'cleardnsbl' => 'never');
+$wglobal_array = array ('popup' => 'off', 'sortcolumn' => 'none', 'sortmix' => 'off', 'sortdir' => 'asc',
+			'maxfails' => 3, 'maxheight' => 2500, 'clearip' => 'never', 'cleardnsbl' => 'never', 'show_agg' => 'off');
 
-$pfb['wglobal'] = config_get_path('installedpackages/pfblockerngglobal', []);
+$pfb['wglobal'] = PfbConfig::readSection('installedpackages/pfblockerngglobal');
 foreach ($wglobal_array as $type => $value) {
 	$pfb[$type] = $pfb['wglobal']['widget-' . "{$type}"] ?: $value;
 }
@@ -63,7 +71,7 @@ if ($_GET) {
 	// Called by Ajax to update widget contents
 	elseif ($_GET['getNewWidget']) {
 		$pfb_table = pfBlockerNG_get_header('js');
-		pfBlockerNG_get_table('js', $pfb_table);
+		pfb_widget_table_call($pfb_table, 'js');
 		return;
 	}
 }
@@ -71,43 +79,47 @@ if ($_GET) {
 if ($_POST) {
 
 	// Save widget customizations
-	if (isset($_POST['pfb_submit'])) {
-		$pfb['wglobal']['widget-popup']			= pfb_filter($_POST['pfb_popup'], PFB_FILTER_ON_OFF, 'widget');
-		$pfb['wglobal']['widget-sortmix']		= pfb_filter($_POST['pfb_sortmix'], PFB_FILTER_ON_OFF, 'widget');
+	// issue #1050: $nocsrf=TRUE means csrf-magic never runs here -- gate the mutation itself.
+	// issue #1064: per-field reads use ?? '' -- a crafted POST (or an unchecked checkbox) omits keys.
+	if (pfb_widget_post_guard($_POST, $_SERVER, 'pfb_submit')) {
+		$pfb['wglobal']['widget-popup']			= pfb_filter($_POST['pfb_popup'] ?? '', PFB_FILTER_ON_OFF, 'widget');
+		$pfb['wglobal']['widget-sortmix']		= pfb_filter($_POST['pfb_sortmix'] ?? '', PFB_FILTER_ON_OFF, 'widget');
+		$pfb['wglobal']['widget-show_agg']		= pfb_filter($_POST['pfb_show_agg'] ?? '', PFB_FILTER_ON_OFF, 'widget');
+		// foreign key: pfblockerngglobal/widget-* are dashboard widget keys, not in registry
 		config_set_path('installedpackages/pfblockerngglobal/widget-popup', $pfb['wglobal']['widget-popup']);
+		// foreign key: pfblockerngglobal/widget-* are dashboard widget keys, not in registry
 		config_set_path('installedpackages/pfblockerngglobal/widget-sortmix', $pfb['wglobal']['widget-sortmix']);
+		// foreign key: pfblockerngglobal/widget-* are dashboard widget keys, not in registry
+		config_set_path('installedpackages/pfblockerngglobal/widget-show_agg', $pfb['wglobal']['widget-show_agg']);
 
-		if (in_array($_POST['pfb_sortcolumn'], array('none', 'alias', 'count', 'packets', 'update'))) {
+		if (in_array($_POST['pfb_sortcolumn'] ?? '', array('none', 'alias', 'count', 'packets', 'update'))) {
 			$pfb['wglobal']['widget-sortcolumn']	= $_POST['pfb_sortcolumn'];
+			// foreign key: pfblockerngglobal/widget-* are dashboard widget keys, not in registry
 			config_set_path('installedpackages/pfblockerngglobal/widget-sortcolumn', $pfb['wglobal']['widget-sortcolumn']);
 		}
-		if (in_array($_POST['pfb_sortdir'], array('asc', 'des'))) {
+		if (in_array($_POST['pfb_sortdir'] ?? '', array('asc', 'des'))) {
 			$pfb['wglobal']['widget-sortdir']	= $_POST['pfb_sortdir'];
+			// foreign key: pfblockerngglobal/widget-* are dashboard widget keys, not in registry
 			config_set_path('installedpackages/pfblockerngglobal/widget-sortdir', $pfb['wglobal']['widget-sortdir']);
 		}
-		if (in_array($_POST['pfb_clearip'], array('never', 'daily', 'weekly'))) {
+		if (in_array($_POST['pfb_clearip'] ?? '', array('never', 'daily', 'weekly'))) {
 			$pfb['wglobal']['widget-clearip']	= $_POST['pfb_clearip'];
+			// foreign key: pfblockerngglobal/widget-* are dashboard widget keys, not in registry
 			config_set_path('installedpackages/pfblockerngglobal/widget-clearip', $pfb['wglobal']['widget-clearip']);
 		}
-		if (in_array($_POST['pfb_cleardnsbl'], array('never', 'daily', 'weekly'))) {
+		if (in_array($_POST['pfb_cleardnsbl'] ?? '', array('never', 'daily', 'weekly'))) {
 			$pfb['wglobal']['widget-cleardnsbl']	= $_POST['pfb_cleardnsbl'];
+			// foreign key: pfblockerngglobal/widget-* are dashboard widget keys, not in registry
 			config_set_path('installedpackages/pfblockerngglobal/widget-cleardnsbl', $pfb['wglobal']['widget-cleardnsbl']);
 		}
-		if (is_numeric($_POST['pfb_dnsblquery']) && $_POST['pfb_dnsblquery'] < 10000) {
-			$pfb['wglobal']['widget-dnsblquery']	= $_POST['pfb_dnsblquery'];
-			config_set_path('installedpackages/pfblockerngglobal/widget-dnsblquery', $pfb['wglobal']['widget-dnsblquery']);
-
-			// Restart pfb_dnsbl service on Query frequency changes
-			if ($_POST['pfb_dnsblquery'] != $pfb['dnsblquery']) {
-				restart_service('pfb_dnsbl');
-			}
-		}
-		if (is_numeric($_POST['pfb_maxfails']) && $_POST['pfb_maxfails'] < 100) {
+		if (is_numeric($_POST['pfb_maxfails'] ?? '') && $_POST['pfb_maxfails'] < 100) {
 			$pfb['wglobal']['widget-maxfails']	= $_POST['pfb_maxfails'];
+			// foreign key: pfblockerngglobal/widget-* are dashboard widget keys, not in registry
 			config_set_path('installedpackages/pfblockerngglobal/widget-maxfails', $pfb['wglobal']['widget-maxfails']);
 		}
-		if (is_numeric($_POST['pfb_maxheight']) && $_POST['pfb_maxheight'] < 10000) {
+		if (is_numeric($_POST['pfb_maxheight'] ?? '') && $_POST['pfb_maxheight'] < 10000) {
 			$pfb['wglobal']['widget-maxheight']	= $_POST['pfb_maxheight'];
+			// foreign key: pfblockerngglobal/widget-* are dashboard widget keys, not in registry
 			config_set_path('installedpackages/pfblockerngglobal/widget-maxheight', $pfb['wglobal']['widget-maxheight']);
 		}
 
@@ -125,28 +137,28 @@ if ($_POST) {
 					// Remove unreferenced 'daily' or 'weekly' cron job
 					$pfb_other = ($pfb_day == '*') ? '7' : '*';
 					if (pfblockerng_cron_exists($pfb_cmd, '0', '0', '*', $pfb_other)) {
-						install_cron_job("pfblockerng.php {$type}", false);
+						install_cron_job("pfblockerng.php {$type}", FALSE);
 					}
 
 					if (!pfblockerng_cron_exists($pfb_cmd, '0', '0', '*', $pfb_day)) {
-						install_cron_job($pfb_cmd, true, '0', '0', '*', '*', $pfb_day, 'root');
+						install_cron_job($pfb_cmd, TRUE, '0', '0', '*', '*', $pfb_day, 'root');
 					}
 				}
 				else {
 					if (pfblockerng_cron_exists($pfb_cmd, '0', '0', '*', '*')) {
-						install_cron_job("pfblockerng.php {$type}", false);
+						install_cron_job("pfblockerng.php {$type}", FALSE);
 					}
 					if (pfblockerng_cron_exists($pfb_cmd, '0', '0', '*', '7')) {
-						install_cron_job("pfblockerng.php {$type}", false);
+						install_cron_job("pfblockerng.php {$type}", FALSE);
 					}
 				}
 			}
 			else {
 				if (pfblockerng_cron_exists($pfb_cmd, '0', '0', '*', '*')) {
-					install_cron_job("pfblockerng.php {$type}", false);
+					install_cron_job("pfblockerng.php {$type}", FALSE);
 				}
 				if (pfblockerng_cron_exists($pfb_cmd, '0', '0', '*', '7')) {
-					install_cron_job("pfblockerng.php {$type}", false);
+					install_cron_job("pfblockerng.php {$type}", FALSE);
 				}
 			}
 		}
@@ -154,8 +166,12 @@ if ($_POST) {
 		// Remove old settings
 		if (isset($pfb['wglobal']['widget-maxpivot'])) {
 			unset($pfb['wglobal']['widget-maxpivot']);
+			// foreign key: pfblockerngglobal/widget-* are dashboard widget keys, not in registry
 			config_del_path('installedpackages/pfblockerngglobal/widget-maxpivot');
 		}
+		unset($pfb['wglobal']['widget-dnsblquery']);
+		// foreign key: pfblockerngglobal/widget-* are dashboard widget keys, not in registry
+		config_del_path('installedpackages/pfblockerngglobal/widget-dnsblquery');
 
 		write_config('pfBlockerNG: Saved Widget customizations via Dashboard');
 		header("Location: /");
@@ -163,14 +179,18 @@ if ($_POST) {
 	}
 
 	// Clear widget Failed downloads
-	elseif ($_POST['pfblockerngack']) {
+	// issue #1050: $nocsrf=TRUE means csrf-magic never runs here -- gate the mutation itself.
+	elseif (pfb_widget_post_guard($_POST, $_SERVER, 'pfblockerngack')) {
 		exec("{$pfb['sed']} -i '' 's/FAIL/Fail/g' /var/log/pfblockerng/error.log");
+		// issue #999: ADR-61 moved the reporting list to the sync-status ledger --
+		// close the entries it actually reads, not just the retired error.log.
+		pfBlockerNG_clearfailed($pfb['dbdir']);
 		header("Location: /");
 		exit(0);
 	}
 
 	// Clear widget IP/DNSBL Packet Counts
-	elseif ($_POST['pfblockerngclearall']) {
+	elseif (pfb_widget_post_guard($_POST, $_SERVER, 'pfblockerngclearall')) {
 		pfBlockerNG_clearip();
 		pfBlockerNG_clearsqlite('clearip');
 		pfBlockerNG_clearsqlite('cleardnsbl');
@@ -179,7 +199,7 @@ if ($_POST) {
 	}
 
 	// Clear widget IP Packet Counts
-	elseif ($_POST['pfblockerngclearip']) {
+	elseif (pfb_widget_post_guard($_POST, $_SERVER, 'pfblockerngclearip')) {
 		pfBlockerNG_clearip();
 		pfBlockerNG_clearsqlite('clearip');
 		header("Location: /");
@@ -187,59 +207,11 @@ if ($_POST) {
 	}
 
 	// Clear widget DNSBL Packet Counts
-	elseif ($_POST['pfblockerngcleardnsbl']) {
+	elseif (pfb_widget_post_guard($_POST, $_SERVER, 'pfblockerngcleardnsbl')) {
 		pfBlockerNG_clearsqlite('cleardnsbl');
 		header("Location: /");
 		exit(0);
 	}
-}
-
-
-// Sort widget table according to user configuration
-function pfbsort(&$array, $subkey, $sort_ascending) {
-	if (empty($array)) {
-		return;
-	}
-
-	if (count($array)) {
-		$temp_array[key($array)] = array_shift($array);
-	}
-
-	foreach ($array as $key => $val) {
-		$offset = 0;
-		$found = FALSE;
-
-		foreach ($temp_array as $tmp_key => $tmp_val) {
-			if (!$found) {
-				switch($subkey) {
-					case 'alias':
-						(strtolower($key) > strtolower($tmp_key)) ? $found = TRUE : $found = FALSE;
-						break;
-					case 'update':
-						(strtotime($val[$subkey]) > strtotime($tmp_val[$subkey])) ? $found = TRUE : $found = FALSE;
-						break;
-					default:
-						(strtolower($val[$subkey]) > strtolower($tmp_val[$subkey])) ? $found = TRUE : $found = FALSE;
-						break;
-				}
-			}
-			if ($found) {
-				$temp_array = array_merge((array)array_slice($temp_array, 0, $offset), array($key => $val), array_slice($temp_array, $offset));
-			}
-			$offset++;
-		}
-
-		if (!$found) {
-			$temp_array = array_merge($temp_array, array($key => $val));
-		}
-	}
-
-	if (!$sort_ascending) {
-		$array = array_reverse($temp_array);
-	} else {
-		$array = $temp_array;
-	}
-	return;
 }
 
 
@@ -249,127 +221,67 @@ function pfBlockerNG_update_table() {
 	$pfb_table = $pfb_dtable = array();
 	$pfb['pfctlerr'] = FALSE;
 
+	// Reveal the ADR-11 aggregate aliases only when the widget setting opts in.
+	$show_agg = (($pfb['show_agg'] ?? 'off') == 'on');
+
 	/* Alias Table Definitions -	'update'	- Last Updated Timestamp
 					'rule'		- Total number of Firewall rules per alias
 					'count'		- Total Line Count per alias
 					'packets'	- Total number of pf packets per alias
-					'type'		- Rule type - block|reject|pass|match
+					'type'		- Rule type - block|reject|pass|match; DNSBL marks a dnsbl-table row (its group)
 					'id'		- Alias key value				*/
 
-	exec("{$pfb['pfctl']} -vvsTables | {$pfb['grep']} -A4 'pfB_'", $pfb_pfctl);
-	if (!empty($pfb_pfctl)) {
-		foreach($pfb_pfctl as $line) {
-			$line = trim(str_replace(array( '[', ']' ), '', $line));
-			if (substr($line, 0, 1) == '-') {
-				$pfb_alias = trim(strstr($line, 'pfB', FALSE));
-				if (empty($pfb_alias) || $pfb_alias == 'pfB_DNSBL_VIPs') {
-					unset($pfb_alias);
-					continue;
-				}
-
-				$pfb_aliasdir_esc = escapeshellarg("{$pfb['aliasdir']}/{$pfb_alias}.txt");
-				exec("{$pfb['grep']} -cv '^1\.1\.1\.1\$' {$pfb_aliasdir_esc}", $match);
-				if (!is_numeric($match[1])) {
-					$match[1] = 0;
-				}
-				$pfb_table[$pfb_alias] = array('count' => $match[1], 'img' => $pfb['down']);
-				exec("{$pfb['ls']} -l -D'%b %d %T' {$pfb_aliasdir_esc} | {$pfb['awk']} '{ print \$6,\$7,\$8 }'", $update);
-
-				$pfb_table[$pfb_alias]['update']	= htmlspecialchars($update[0]);
-				$pfb_table[$pfb_alias]['rule']		= 0;
-				$pfb_table[$pfb_alias]['packets']	= 0;
-				unset($match, $update);
-				continue;
-			}
-
-			if (isset($pfb_alias)) {
-				if (substr($line, 0, 9) == 'Addresses') {
-					$addr = trim(exec_command(implode(' ', [
-						$pfb['pfctl'], '-t',
-						escapeshellarg($pfb_alias),
-						'-Tshow', '|', $pfb['wc'], '-l'
-					])));
-					if (!is_numeric($addr)) {
-						$addr = 0;
-					}
-					$pfb_table[$pfb_alias]['count'] = $addr;
-					continue;
-				}
-				unset($pfb_alias);
-			}
+	// Issue #2645: one pfctl -vvsTables parse. Count from Addresses.
+	// Update stays file mtime. Packets stay pfSense_get_pf_rules() below.
+	$ip_ph = pfb_ip_placeholder();
+	$pfb_saw = FALSE;
+	foreach (pfb_pfctl_tables_parse(pfb_pfctl_tables_raw()) as $pfb_alias => $info) {
+		if (!str_starts_with($pfb_alias, 'pfB_')) {
+			continue;
 		}
+		$pfb_saw = TRUE;
+		if (pfb_widget_alias_hidden($pfb_alias, $show_agg)) {
+			continue;
+		}
+		$alias_file = "{$pfb['aliasdir']}/{$pfb_alias}.txt";
+		$mtime_raw = pfb_file_mtime($alias_file);
+		$mtime = ($mtime_raw !== FALSE) ? date('Y-m-d H:i:s', (int) $mtime_raw) : '';
+		// ip_ph is loaded into the pf table, so Addresses includes it.
+		// Padded-empty (Addresses==1, placeholder-only file) shows 0.
+		$family = str_ends_with($pfb_alias, '_v6') ? 'v6' : 'v4';
+		$placeholder = pfb_placeholder_for_family($ip_ph, $family);
+		$count = pfb_widget_alias_display_count($info['addresses'], $alias_file, $placeholder);
+		$pfb_table[$pfb_alias] = array(
+			'count'		=> $count,
+			'img'		=> $pfb['down'],
+			'update'	=> $mtime,
+			'rule'		=> 0,
+			'packets'	=> 0,
+		);
 	}
-	else {
-		// Error. No pf labels found.
+	if (!$pfb_saw) {
 		$pfb['pfctlerr'] = TRUE;
 	}
 
 	// Determine if firewall rules are defined
+	// foreign section: filter/rule is a pfSense core section, not in registry
 	$pfb_filter_rules = config_get_path('filter/rule', []);
 
 	if (!empty($pfb_filter_rules)) {
-		$tracked_rules = array();
-
-		// Get the relevant pfB rules
-		foreach ($pfb_filter_rules as $rule) {
-			if (strpos($rule['descr'], 'pfB_DNSBL_Ping') !== FALSE || strpos($rule['descr'], 'pfB_DNSBL_Permit') !== FALSE) {
-				continue;
+		// A failed pf read can return a non-array; the helper's array type would TypeError.
+		$pfb_pf_rules = pfSense_get_pf_rules();
+		foreach (pfb_rule_alias_packets($pfb_filter_rules, is_array($pfb_pf_rules) ? $pfb_pf_rules : []) as $pfb_alias => $pfb_agg) {
+			if ($pfb_agg['rule'] > 0) {
+				$pfb_table[$pfb_alias]['img'] = $pfb['up'];
+				$pfb_table[$pfb_alias]['rule'] = $pfb_agg['rule'];
+				$pfb_table[$pfb_alias]['type'] = $pfb_agg['type'];
 			}
-
-			$tracked_rules[$rule['tracker']] = array('packets' => 0);
-
-			if (isset($rule['source']['address']) && stripos($rule['source']['address'], 'pfb_') !== FALSE) {
-				$tracked_rules[$rule['tracker']]['source'] = $rule['source']['address'];
-				if (!isset($rule['disabled'])) {
-					$pfb_table[$rule['source']['address']]['img'] = $pfb['up'];
-					$pfb_table[$rule['source']['address']]['rule'] += 1;
-					if (!isset($pfb_table[$rule['source']['address']]['packets'])) {
-						$pfb_table[$rule['source']['address']]['packets'] = 0;
-					}
-					$pfb_table[$rule['source']['address']]['type'] = ucfirst($rule['type']) ?: 'unknown';
-				}
-			}
-			
-			if (isset($rule['destination']['address']) && stripos($rule['destination']['address'], 'pfb_') !== FALSE) {
-				$tracked_rules[$rule['tracker']]['destination'] = $rule['destination']['address'];
-				if (!isset($rule['disabled'])) {
-					$pfb_table[$rule['destination']['address']]['img'] = $pfb['up'];
-					$pfb_table[$rule['destination']['address']]['rule'] += 1;
-					if (!isset($pfb_table[$rule['destination']['address']]['packets'])) {
-						$pfb_table[$rule['destination']['address']]['packets'] = 0;
-					}
-					$pfb_table[$rule['destination']['address']]['type'] = ucfirst($rule['type']) ?: 'unknown';
-				}
-			}
-		}
-
-		// Get the packet count for each pfB rule
-		if (!empty($tracked_rules)) {
-			foreach (pfSense_get_pf_rules() as $prule) {
-
-				// prule may be an error string if pftcl_get_rule() returned an error
-				if (!is_array($prule)) {
-					continue;
-				}
-
-				if (isset($prule['tracker'])) {
-					$prule_id = $prule['tracker'];
-					if (isset($tracked_rules[$prule_id])) {
-						if (isset($prule['packets']) && $prule['packets'] > 0) {
-							if (isset($tracked_rules[$prule_id]['source'])) {
-								$pfb_table[$tracked_rules[$prule_id]['source']]['packets'] += $prule['packets'];
-							}
-							if (isset($tracked_rules[$prule_id]['destination'])) {
-								$pfb_table[$tracked_rules[$prule_id]['destination']]['packets'] += $prule['packets'];
-							}
-						}
-					}
-				}
-			}
+			$pfb_table[$pfb_alias]['packets'] = ($pfb_table[$pfb_alias]['packets'] ?? 0) + $pfb_agg['packets'];
 		}
 	}
 
 	// Collect pfB Alias ID for popup
+	// foreign section: aliases/alias is a pfSense core section, not in registry
 	foreach (config_get_path('aliases/alias', []) as $key => $alias) {
 		if (isset($pfb_table[$alias['name']])) {
 			$pfb_table[$alias['name']]['id'] = $key;
@@ -377,7 +289,7 @@ function pfBlockerNG_update_table() {
 	}
 
 	// DNSBL collect statistics
-	if ($pfb['enable'] == 'on' && $pfb['dnsbl'] == 'on') {
+	if ($pfb['enable'] === PfbToggle::On && $pfb['dnsbl'] === PfbToggle::On) {
 
 		$pfb['dnsbl_missing'] = TRUE;	// Flag to indicate error message to user in widget
 		$db_handle = pfb_open_sqlite(1, 'Widget stats');
@@ -396,7 +308,7 @@ function pfBlockerNG_update_table() {
 							$pfb_dtable[$res['groupname']] = array ('count' => $res['entries'], 'img' => $pfb['up']);
 						}
 					}
-					$pfb_dtable[$res['groupname']]['update'] = htmlspecialchars("{$res['timestamp']}");
+					$pfb_dtable[$res['groupname']]['update'] = pfb_iso_timestamp((string) $res['timestamp']);
 
 					if (!is_numeric($res['counter'])) {
 						$res['counter'] = 0;
@@ -414,22 +326,33 @@ function pfBlockerNG_update_table() {
 
 	// Sort tables per sort customization
 	if ($pfb['sortcolumn'] != 'none') {
-		if ($pfb['sortdir'] == 'asc') {
-			if ($pfb['sortmix'] == 'on') {
-				$pfb_table = array_merge($pfb_table, $pfb_dtable);
-				pfbsort($pfb_table, $pfb['sortcolumn'], FALSE);
-			} else {
-				pfbsort($pfb_table, $pfb['sortcolumn'], FALSE);
-				pfbsort($pfb_dtable, $pfb['sortcolumn'], FALSE);
+		$sortkey = $pfb['sortcolumn'];
+		$ascending = ($pfb['sortdir'] == 'asc');
+
+		// Descending compare (by key for 'alias', else by the $sortkey value column);
+		// ascending is simply the reverse -- string keys survive array_reverse() untouched.
+		$sort_table = static function (&$table) use ($sortkey, $ascending) {
+			if (empty($table)) {
+				return;
 			}
+			if ($sortkey === 'alias') {
+				uksort($table, fn($a, $b) => strtolower($b) <=> strtolower($a));
+			} elseif ($sortkey === 'update') {
+				uasort($table, fn($a, $b) => strtotime($b[$sortkey]) <=> strtotime($a[$sortkey]));
+			} else {
+				uasort($table, fn($a, $b) => strtolower($b[$sortkey]) <=> strtolower($a[$sortkey]));
+			}
+			if ($ascending) {
+				$table = array_reverse($table);
+			}
+		};
+
+		if ($pfb['sortmix'] == 'on') {
+			$pfb_table = array_merge($pfb_table, $pfb_dtable);
+			$sort_table($pfb_table);
 		} else {
-			if ($pfb['sortmix'] == 'on') {
-				$pfb_table = array_merge($pfb_table, $pfb_dtable);
-				pfbsort($pfb_table, $pfb['sortcolumn'], TRUE);
-			} else {
-				pfbsort($pfb_table, $pfb['sortcolumn'], TRUE);
-				pfbsort($pfb_dtable, $pfb['sortcolumn'], TRUE);
-			}
+			$sort_table($pfb_table);
+			$sort_table($pfb_dtable);
 		}
 	}
 
@@ -440,17 +363,27 @@ function pfBlockerNG_update_table() {
 }
 
 
+// Close every open PHP-owned sync-status ledger entry (both facilities) -- the
+// "Clear Failed Downloads" icon's manual dismiss. issue #999: never touches the
+// python-owned ledger (pfb_unbound.py's exclusive writer).
+function pfBlockerNG_clearfailed($ledger_dir) {
+	foreach (pfb_sync_status_list_open($ledger_dir) as $entry) {
+		pfb_sync_status_close($entry['facility'], $entry['item'], $entry['stage'], $ledger_dir);
+	}
+}
+
+
 // Called on initial load and Ajax to update Failed download contents (Create href to Alias/Group editor)
 function pfBlockerNG_get_failed() {
 	global $pfb;
 	$response = '';
 
-	// Collect any failed downloads
-	$today_date = date('m/j/y', time());
-	exec("{$pfb['grep']} 'FAIL' {$pfb['errlog']} | {$pfb['grep']} {$today_date}", $results);
-	$results = array_reverse($results);
+	// ADR-61: ledger-driven -- merge PHP (both facilities) + Python-owned entries,
+	// most-recently-touched first (the old grep's array_reverse equivalent).
+	$entries = array_merge(pfb_sync_status_list_open($pfb['dbdir']), pfb_py_sync_status_list_open($pfb['dnsbldir']));
+	usort($entries, fn ($a, $b) => $b['last_seen'] <=> $a['last_seen']);
 
-	if (!empty($results)) {
+	if (!empty($entries)) {
 
 		$list_type = array( 'pfblockernglistsv4' => 'ipv4', 'pfblockernglistsv6' => 'ipv6', 'pfblockerngdnsbl' => 'dnsbl' );
 		$emheight = ($pfb['maxfails'] * 1.37) + 0.1;
@@ -460,50 +393,59 @@ function pfBlockerNG_get_failed() {
 		$tab6 = "\t\t\t\t\t";
 		$tab7 = "\t\t\t\t\t\t";
 		$counter = 1;
+		// issue #1497: read at the link build below only when $pfb_found is TRUE,
+		// which is set in the same loop iteration that assigns both -- provably
+		// paired, but PHPStan can't correlate that across the nested foreach/break 2.
+		$key = '';
+		$type = '';
 
-		foreach ($results as $result) {
-			$result = htmlspecialchars($result);
+		foreach ($entries as $entry) {
+			$text = htmlspecialchars($entry['message']);
 
-			if (substr($result, 3, 4) == 'pfB_') {
-				$header		= str_replace(' [ pfB_', '', strstr($result, ' - ', TRUE));
-				$pfb_prefix	= 'pfB_';
+			// A recognized item is the structured, code-controlled field a link is
+			// built from -- never the free-text message (that coupling is exactly
+			// the log-format fragility this ADR retires).
+			if (str_starts_with($entry['item'], 'pfB_')) {
+				$pfb_prefix = 'pfB_';
+			} elseif (str_starts_with($entry['item'], 'DNSBL_')) {
+				$pfb_prefix = 'DNSBL_';
 			} else {
-				$header		= str_replace(' [ DNSBL_', '', strstr($result, ' - ', TRUE));
-				$pfb_prefix	= 'DNSBL_';
+				$pfb_prefix = '';
 			}
 
-			// Remove trailing IP type
-			$suffix = substr($header, -3);
-			if ($suffix == '_v4' || $suffix == '_v6') {
-				$f_alias = substr($header, 0, -3);
-			} else {
-				$f_alias = $header;
-			}
+			$pfb_found = FALSE;
+			$f_alias   = '';
+			if ($pfb_prefix !== '') {
+				$f_alias = substr($entry['item'], strlen($pfb_prefix));
+				// Remove trailing IP type
+				$suffix = substr($f_alias, -3);
+				if ($suffix == '_v4' || $suffix == '_v6') {
+					$f_alias = substr($f_alias, 0, -3);
+				}
 
-			if (!empty(pfb_filter($f_alias, PFB_FILTER_WORD, 'widget')) && $f_alias != $p_alias) {
-				$pfb_found = FALSE;
-				foreach ($list_type as $conf_type => $type) {
-					foreach (config_get_path("installedpackages/{$conf_type}/config", []) as $key => $alias) {
-						if ($alias['aliasname'] == $f_alias) {
-							$pfb_found = TRUE;
-							break 2;
+				if (!empty(pfb_filter($f_alias, PFB_FILTER_WORD, 'widget'))) {
+					foreach ($list_type as $conf_type => $type) {
+						// foreign structure: pfblockernglistsv4/v6/dnsbl list sections are not in registry
+						foreach (config_get_path("installedpackages/{$conf_type}/config", []) as $key => $alias) {
+							if ($alias['aliasname'] == $f_alias) {
+								$pfb_found = TRUE;
+								break 2;
+							}
 						}
 					}
 				}
 			}
-			else {
-				$pfb_found = TRUE;
-			}
 
 			if ($pfb_found) {
-				$link   = "<a target=\"_blank\" href=\"/pfblockerng/pfblockerng_category_edit.php?type={$type}&act=edit&rowid={$key}\" ";
+				$link   = "<a target=\"_blank\" rel=\"noopener noreferrer\" href=\"/pfblockerng/pfblockerng_category_edit.php?type={$type}&act=edit&rowid={$key}\" ";
 				$link  .= "\"title=\"Click to view Alias\" >{$pfb_prefix}{$f_alias}</a>";
-				$final	= str_replace("{$pfb_prefix}{$f_alias}", $link, $result);
-				$p_alias = $f_alias;
+				// Prepend, never splice into $text: the message is free-text and is not
+				// guaranteed to contain "{$pfb_prefix}{$f_alias}" verbatim -- a guaranteed
+				// link beats a fragile substring match against writer-authored wording.
+				$final = "{$link}: {$text}";
 			}
 			else {
-				$final = $result;
-				$p_alias = '';
+				$final = $text;
 			}
 
 			if ($counter == 1) {
@@ -547,7 +489,7 @@ function pfBlockerNG_get_header($mode='') {
 				$values['type'] = 'Deny';
 			}
 
-			if (!isset($values['id'])) {
+			if (($values['type'] ?? '') === 'DNSBL') {
 				if (!isset($pfb_table['stats']['DNSBL'])) {
 					$pfb_table['stats']['DNSBL'] = 0;
 				}
@@ -562,7 +504,7 @@ function pfBlockerNG_get_header($mode='') {
 					$pfb_table['counts']['DNSBL']		+= $values['count'];
 				}
 			}
-			elseif (isset($values['id']) && isset($values['type']) && isset($pfb_ip_types[$values['type']])) {
+			elseif (isset($pfb_ip_types[$values['type'] ?? ''])) {
 				if (!isset($pfb_table['stats'][$values['type']])) {
 					$pfb_table['stats'][$values['type']] = 0;
 				}
@@ -591,78 +533,69 @@ function pfBlockerNG_get_header($mode='') {
 	}
 
 	// Status indicator if pfBlockerNG is enabled/disabled
-	if ($pfb['enable'] == 'on') {
+	if ($pfb['enable'] === PfbToggle::On) {
 		$pfb_status	= 'fa-solid fa-check-circle text-success';
 		$pfb_msg	= 'pfBlockerNG is Active.';
 
-		// Check Masterfile Database Sanity
-		if (isset($pfb['config']['enable_dup']) && $pfb['config']['enable_dup'] == 'on') {
-			$db_sanity = exec("{$pfb['grep']} 'Sanity check' {$pfb['logdir']}/pfblockerng.log | tail -1 | {$pfb['grep']} -o 'PASSED'");
-			if ($db_sanity != 'PASSED') {
-				$pfb_status	= 'fa-solid fa-exclamation-circle text-warning';
-				$pfb_msg	= 'pfBlockerNG deDuplication is out of sync. Perform a Force Reload to correct.';
-			}
+		// ADR-61: yellow on ANY open facility='ip' sync-status entry (dedup is
+		// just one stage among several now, not a separately-coded branch).
+		$pfb_ip_open = pfb_sync_status_list_open($pfb['dbdir'], 'ip');
+		if (!empty($pfb_ip_open)) {
+			$pfb_status	= 'fa-solid fa-exclamation-circle text-warning';
+			// Match on stage, not item: an admin-named alias literally called "dedup"
+			// would otherwise be misclassified as the dedup-sanity sentinel entry.
+			$pfb_ip_other	= array_filter($pfb_ip_open, fn ($entry) => $entry['stage'] !== 'dedup');
+			$pfb_msg	= empty($pfb_ip_other)
+				? 'pfBlockerNG deDuplication is out of sync. Use \'Run Now\' on \'Update\' with \'Force\' set to \'Parse\' to correct.'
+				: sprintf('pfBlockerNG has %d open issue(s). See the Failed Downloads list below.', count($pfb_ip_open));
 		}
 	} else {
 		$pfb_status = 'fa-solid fa-times-circle text-danger';
 		$pfb_msg = 'pfBlockerNG is Disabled.';
 	}
 
-	$unbound_validate = FALSE;
-	if (file_exists("{$pfb['dnsbldir']}/unbound.conf")) {
-		if ($pfb['dnsbl_mode'] == 'dnsbl_python') {
-			$py_mode = '(Python mode)';
-			if (strpos(file_get_contents("{$pfb['dnsbldir']}/unbound.conf"), 'pfb_unbound.py') !== FALSE) {
-				$unbound_validate = TRUE;
-			}
-		} else {
-			$py_mode = '(Unbound mode)';
-			if (strpos(file_get_contents("{$pfb['dnsbldir']}/unbound.conf"), 'pfb_dnsbl') !== FALSE) {
-				$unbound_validate = TRUE;
-			}
-		}
-	}
+	$unbound_validate = pfb_unbound_py_module_wired();
 
 	// Status indicator if DNSBL is actively running
-	if ($pfb['enable'] == 'on' && $pfb['dnsbl'] == 'on' && $pfb['unbound_state'] == 'on' && $unbound_validate) {
+	if ($pfb['enable'] === PfbToggle::On && $pfb['dnsbl'] === PfbToggle::On && $pfb['unbound_state'] === PfbToggle::On && $unbound_validate) {
 
-		// Check DNSBL Database Sanity
-		$db_sanity = exec("{$pfb['grep']} 'DNSBL update' {$pfb['logdir']}/pfblockerng.log | tail -1 | {$pfb['grep']} -o 'OUT OF SYNC'");
-		if ($db_sanity == 'OUT OF SYNC') {
+		// ADR-61: yellow on ANY open facility='dnsbl' entry, merged PHP + Python ledgers.
+		$pfb_dnsbl_open = array_merge(pfb_sync_status_list_open($pfb['dbdir'], 'dnsbl'), pfb_py_sync_status_list_open($pfb['dnsbldir']));
+		if (!empty($pfb_dnsbl_open)) {
 			$dnsbl_status	= 'fa-solid fa-exclamation-circle text-warning';
-			$dnsbl_msg	= "DNSBL {$py_mode} is out of sync. Perform a Force Reload to correct.";
+			$dnsbl_msg	= sprintf('DNSBL has %d open issue(s). See the Failed Downloads list below.', count($pfb_dnsbl_open));
 		} else {
 			$dnsbl_status	= 'fa-solid fa-check-circle text-success';
-			$dnsbl_msg	= "DNSBL {$py_mode} is Active on vip: {$pfb['dnsbl_vip4']} ports: {$pfb['dnsbl_port']} & {$pfb['dnsbl_port_ssl']}";
-		}
-
-		// Check for any Python Integration errors
-		if ($pfb['dnsbl_mode'] == 'dnsbl_python' && (int)@filesize($pfb['pyerrlog']) > 0) {
-			$dnsbl_status	= 'fa-solid fa-exclamation-circle text-warning';
-			$dnsbl_msg	= "DNSBL {$py_mode} errors Found! Review py_error.log";
+			// issue #3539: the VIP and ports are only meaningful while a block answers with the VIP.
+			$dnsbl_msg	= empty($pfb['dnsbl_vip_demand'])
+				? 'DNSBL is Active.'
+				: "DNSBL is Active on vip: {$pfb['dnsbl_vip4']} ports: {$pfb['dnsbl_port']} & {$pfb['dnsbl_port_ssl']}";
 		}
 	} else {
 		$dnsbl_status		= 'fa-solid fa-times-circle text-danger';
 
-		// Check for any Python Integration errors
-		if ($pfb['dnsbl_mode'] == 'dnsbl_python' && (int)@filesize($pfb['pyerrlog']) > 0) {
-			$dnsbl_msg = "DNSBL {$py_mode} is Disabled with errors! Review py_error.log";
-		} else {
-			$dnsbl_msg = "DNSBL {$py_mode} is Disabled.";
-		}
+		// ADR-61: disabled-with-errors wording, from the ledger (never py_error.log).
+		$pfb_dnsbl_open = array_merge(pfb_sync_status_list_open($pfb['dbdir'], 'dnsbl'), pfb_py_sync_status_list_open($pfb['dnsbldir']));
+		$dnsbl_msg = empty($pfb_dnsbl_open)
+			? 'DNSBL is Disabled.'
+			: 'DNSBL is Disabled with errors! See the Failed Downloads list below.';
 	}
 
 	// Collect folder/file counts
 	$stats = array();
+	// ADR-53 review finding B: '?? ""' -- absent from config.xml until the
+	// IP-settings page's first post-upgrade save. Precomputed (complex '{$...}'
+	// string interpolation does not support the '??' operator).
+	$v4supp_val  = $pfb['ipconfig']['v4suppression'] ?? '';
 	$widget_head = 	array ( array (	'Deny'		=> '',
 					'Pass'		=> '',
 					'Match'		=> '',
-					'Suppression'	=> "{$pfb['ipconfig']['v4suppression']}"),
+					'Suppression'	=> "{$v4supp_val}"),
 
 				array (	'DNSBL'		=> '',
 					'Queries'	=> '',
 					'Percent'	=> '',
-					'Whitelist'	=> "{$pfb['dnsblconfig']['suppression']}"));
+					'Whitelist'	=> "{$pfb['dnsblconfig']['whitelist']}"));
 
 	foreach ($widget_head as $key => $line) {
 		foreach ($line as $type => $config_path) {
@@ -670,18 +603,32 @@ function pfBlockerNG_get_header($mode='') {
 			$stats[$key][$type] = 0;
 			if ($type == 'DNSBL') {
 				if (isset($pfb['dnsbl_missing'])) {
-					$stats[$key][$type] = "<span title='*** SQLite database 'pfb_py_dnsbl.sqlite' is missing, Force Reload DNSBL to recover! ***'>Unknown</span>";
+					$stats[$key][$type] = "<span title=\"*** SQLite database 'pfb_py_dnsbl.sqlite' is missing; use 'Run Now' on 'Update' with 'Run Scope' set to 'DNSBL' and 'Force' set to 'Parse' to recover! ***\">Unknown</span>";
 				} else {
-					$stats[$key][$type] = htmlspecialchars($pfb_table['stats']['DNSBL']);
+					$stats[$key][$type] = htmlspecialchars($pfb_table['stats']['DNSBL'] ?? '');
 				}
 			}
 
 			elseif ($type == 'Suppression' || $type == 'Whitelist') {
 
 				$gcount = 0;
-				foreach (pfbng_text_area_decode($config_path, TRUE, FALSE, TRUE) as $cline) {
-					if (substr(trim($cline), 0, 1) != '#' && !empty($cline)) {
+				foreach (pfb_text_area_decode($config_path, TRUE, FALSE, TRUE) as $cline) {
+					if (!str_starts_with(trim($cline), '#') && !empty($cline)) {
 						$gcount++;
+					}
+				}
+
+				// ADR-53: the Suppression count was v4-only ($config_path above
+				// is v4suppression) -- fold in v6suppression too, now that the
+				// Alerts "+" writes v6 entries as well, so the widget stat reflects
+				// the TOTAL suppressed-host count across both families.
+				if ($type == 'Suppression') {
+					// ADR-53 review finding B: '?? ""' -- same absent-key guard
+					// as the v4 read above.
+					foreach (pfb_text_area_decode($pfb['ipconfig']['v6suppression'] ?? '', TRUE, FALSE, TRUE) as $cline) {
+						if (!str_starts_with(trim($cline), '#') && !empty($cline)) {
+							$gcount++;
+						}
 					}
 				}
 
@@ -716,6 +663,21 @@ function pfBlockerNG_get_header($mode='') {
 					}
 				}
 				pfb_close_sqlite($db_handle);
+
+				// issue #1777: a fresh box has no $db_handle (SQLite DB not yet
+				// created) -- $resolver stays empty and every $resolver[0][...]
+				// read below hits an undefined array key. Seed the same shape the
+				// SELECT above produces (row 0, both counters absent/zero).
+				// No off-appliance test: reaching here needs a real SQLite handle
+				// plus the enclosing stats walk, so the named regression detector
+				// is the live functional-UI sweep (tests/smoke/ui) alone -- the
+				// baseline entry this fix retires is only REPORTED as stale by
+				// conftest.py's pytest_sessionfinish (tests/smoke/ui/conftest.py
+				// ~:501-506): a green sweep never proves a fix by itself, only a
+				// burn-down PR that deletes the entry and re-runs RED does.
+				if (!isset($resolver[0])) {
+					$resolver[0] = array('totalqueries' => 0, 'queries' => 0);
+				}
 
 				if (!is_numeric($resolver[0]['totalqueries'])) {
 					$resolver[0]['totalqueries'] = 0;
@@ -767,8 +729,13 @@ function pfBlockerNG_get_header($mode='') {
 		unset($pfb_table['counts']);
 	}
 
+	// Default the last-clear timestamps so they are defined when the stats below print
+	// them even if the lookup finds no row (or the component is off). Behaviour-preserving.
+	$ip_last_clear		= '';
+	$dnsbl_last_clear	= '';
+
 	// Collect Last packet clear timestamps
-	if ($pfb['enable'] == 'on') {
+	if ($pfb['enable'] === PfbToggle::On) {
 		$db_handle = pfb_open_sqlite(6, 'Last Clear Stats');
 		$pfb_found = FALSE;
 		if ($db_handle) {
@@ -792,8 +759,15 @@ function pfBlockerNG_get_header($mode='') {
 		}
 	}
 
+	// issue #3588: the pfB-DNS status row exists only while pfB-DNS is on
+	$pfb_dns_cells = (($pfb['pfb_dns'] ?? NULL) === PfbToggle::On) ? pfb_dns_widget_status(pfb_dns_status()) : [];
+
 	// Update values via AJAX
 	if ($mode == 'js') {
+
+		foreach ($pfb_dns_cells as $cell) {
+			print("{$cell['anchor']}||{$cell['icon']}||{$cell['title']}\n");
+		}
 
 		foreach ($stats as $key => $group) {
 			foreach ($group as $type => $value) {
@@ -813,14 +787,14 @@ function pfBlockerNG_get_header($mode='') {
 		// Update titles
 		print("Deny||Number of BLOCK & REJECT packet(s) blocked: {$stats[0]['Deny']}_BR_Total Count: {$counts['Deny']}"
 			. "_BR_Last clear: {$ip_last_clear}||title\n");
-		print("Pass||Number of PASS packet(s) passed: {$stats[0]['Pass']}_BR_Total Count: {$counts['Pass']}"
+		print("Pass||Number of PERMIT packet(s) passed: {$stats[0]['Pass']}_BR_Total Count: {$counts['Pass']}"
 			. "_BR_Last clear: {$ip_last_clear}||title\n");
 		print("Match||Number of MATCH packet(s) matched: {$stats[0]['Match']}_BR_Total Count: {$counts['Match']}"
 			. "_BR_Last clear: {$ip_last_clear}||title\n");
 
 		// Don't add DNSBL title if entry is "Unknown"
 		if (!isset($pfb['dnsbl_missing'])) {
-			print("DNSBL||Number of DNSBL Packet(s) blocked: {$stats[1]['DNSBL']}_BR_Total Count: {$counts['DNSBL']}"
+			print("DNSBL||DNSBL blocks: {$stats[1]['DNSBL']}_BR_Total Count: {$counts['DNSBL']}"
 				. "_BR_Last clear: {$dnsbl_last_clear}||title\n");
 			print("Queries||Number of Unbound Resolver Queries since last clearing_BR_Last clear: {$dnsbl_last_clear}\n");
 		}
@@ -845,7 +819,7 @@ function pfBlockerNG_get_header($mode='') {
 		$titles = array ( array (	'Deny'		=> "Number of BLOCK & REJECT packet(s) blocked: {$stats[0]['Deny']}"
 									. "\nTotal Count: {$counts['Deny']}"
 									. "\nLast clear: {$ip_last_clear}",
-						'Pass'		=> "Number of PASS packet(s) passed: {$stats[0]['Pass']}"
+						'Pass'		=> "Number of PERMIT packet(s) passed: {$stats[0]['Pass']}"
 									. "\nTotal Count: {$counts['Pass']}"
 									. "\nLast clear: {$ip_last_clear}",
 						'Match'		=> "Number of MATCH packet(s) matched: {$stats[0]['Match']}"
@@ -853,13 +827,18 @@ function pfBlockerNG_get_header($mode='') {
 									. "\nLast clear: {$ip_last_clear}",
 						'Suppression'	=> 'Number of IP entries in the Suppression List'),
 
-				 array (	'DNSBL'		=> "Number of DNSBL Packet(s) blocked: {$stats[1]['DNSBL']}"
+				 array (	'DNSBL'		=> "DNSBL blocks: {$stats[1]['DNSBL']}"
 									. "\nTotal Count: {$counts['DNSBL']}"
 									. "\nLast clear: {$dnsbl_last_clear}",
 						'Queries'	=> 'Number of Unbound Resolver Queries since last clearing'
 									. "\nLast clear: {$dnsbl_last_clear}",
 						'Percent'	=> 'Percentage of Domains Blocked vs Unbound Resolver Queries',
 						'Whitelist'	=> 'Number of Domain entries in the DNSBL Whitelist'));
+
+		// pfB-DNS status row, above the IP and DNSBL rows (issue #3588)
+		if ($pfb_dns_cells !== []) {
+			print(pfb_dns_widget_row($pfb_dns_cells));
+		}
 
 		foreach ($stats as $key => $line) {
 			$col = 0;
@@ -881,8 +860,9 @@ function pfBlockerNG_get_header($mode='') {
 
 				if ($data == 'Suppression' || $data == 'Whitelist') {
 					$d_type = ($data == 'Suppression') ? 'ip' : 'dnsbl';
+					$d_anchor = pfb_widget_anchor_layout_render($d_type)[$data === 'Suppression' ? 'suppression' : 'whitelist'];
 					print("{$tab5}<td {$tdl} title=\"{$titles[$key][$data]}\"><i class=\"{$faicon[$key][$col]}\"></i>&nbsp;&nbsp;"
-						. "<a target=\"_blank\" href=\"/pfblockerng/pfblockerng_{$d_type}.php#{$data}\" title=\"Link to {$data}\">"
+						. "<a target=\"_blank\" rel=\"noopener noreferrer\" href=\"/pfblockerng/pfblockerng_{$d_type}.php#{$d_anchor}\" title=\"Link to {$data}\">"
 						. "<small><span class=\"pfb_{$data}\">{$value}</span></small></a></td>\n");
 				}
 				else {
@@ -895,8 +875,8 @@ function pfBlockerNG_get_header($mode='') {
 
 			// Print 'Click to Open Logs tab' icon
 			if ($key == 0) {
-				print("{$tab5}<td>\n{$tab6}<a target='_blank' href='pfblockerng/pfblockerng_log.php' "
-					. "title='" . gettext("Click to open Logs tab") . "'>\n{$tab7}<i class='fa-regular fa-rectangle-list'></i>\n{$tab5}</a></td>\n"
+				print("{$tab5}<td>\n{$tab6}<a target='_blank' rel='noopener noreferrer' href='pfblockerng/pfblockerng_log.php' "
+					. "title='" . gettext('Open "Logs"') . "'>\n{$tab7}<i class='fa-regular fa-rectangle-list'></i>\n{$tab5}</a></td>\n"
 					. "{$tab4}</tr>");
 			}
 			elseif ($key == 1) {
@@ -911,9 +891,8 @@ function pfBlockerNG_get_header($mode='') {
 
 
 // Update table contents
-function pfBlockerNG_get_table($mode='', $pfb_table) {
+function pfBlockerNG_get_table($pfb_table, $mode='') {
 	global $pfb;
-	$counter = 0; $dcounter = 1; $response = '';
 
 	if (!empty($pfb_table)) {
 
@@ -926,11 +905,24 @@ function pfBlockerNG_get_table($mode='', $pfb_table) {
 				$values['count'] = number_format($values['count'], 0, '', ',' ) ?: 0;
 			}
 
-			if (strpos($pfb_alias, 'DNSBL_') !== FALSE) {
+			$alias_html = htmlspecialchars($pfb_alias);
+			if ($pfb_alias === 'Upstream') {
+				$alias_html = '<span class="pfb-widget-upstream" title="'
+					. htmlspecialchars(
+						'Domains blocked by your upstream DNS resolver rather than by a pfBlockerNG feed. Only counts when the Resolver is forwarding.',
+						ENT_QUOTES,
+						'UTF-8'
+					)
+					. '">' . $alias_html . '</span>';
+			}
+
+			// pfBlockerNG_update_table() types every dnsbl-table row 'DNSBL'; IP rows never carry it.
+			$group = (($values['type'] ?? '') === 'DNSBL') ? 'dnsbl' : 'ip';
+			if ($group === 'dnsbl') {
 				// Packet column pivot to Alerts Tab
 				if ($values['packets'] > 0) {
 					$packets  = "<a href=\"/pfblockerng/pfblockerng_alerts.php?filterdnsbl={$pfb_alias}\" ";
-					$packets .= "target=\"_blank\" title=\"Click to view these packets in Alerts tab\" >{$values['packets']}</a>";
+					$packets .= "target=\"_blank\" rel=\"noopener noreferrer\" title=\"Open &quot;Reports&quot; &gt; &quot;Alerts&quot;\" >{$values['packets']}</a>";
 				} else {
 					$packets = $values['packets'] ?: 0;
 				}
@@ -948,8 +940,8 @@ function pfBlockerNG_get_table($mode='', $pfb_table) {
 
 				// Packet column pivot to Alerts Tab
 				if ($values['packets'] > 0) {
-					$packets  = "<a target=\"_blank\" href=\"/pfblockerng/pfblockerng_alerts.php?filterip={$pfb_alias}\" ";
-					$packets .= "title=\"Click to view these packets in Alerts tab\" >{$values['packets']}</a>";
+					$packets  = "<a target=\"_blank\" rel=\"noopener noreferrer\" href=\"/pfblockerng/pfblockerng_alerts.php?filterip={$pfb_alias}\" ";
+					$packets .= "title=\"Open &quot;Reports&quot; &gt; &quot;Alerts&quot;\" >{$values['packets']}</a>";
 				}
 				else {
 					$packets = $values['packets'] ?: 0;
@@ -957,21 +949,21 @@ function pfBlockerNG_get_table($mode='', $pfb_table) {
 
 				// Alias table popup
 				if ($values['count'] > 0 && $pfb['popup'] == 'on') {
-					$pfb_alias = "<a href=\"/firewall_aliases_edit.php?id={$values['id']}\" data-popover=\"true\" "
+					$alias_html = "<a href=\"/firewall_aliases_edit.php?id={$values['id']}\" data-popover=\"true\" "
 						. " data-trigger=\"hover focus\" title=\"pfBlockerNG Alias details\" data-content=\""
-						. alias_info_popup($values['id']) . "\" data-html=\"true\">{$pfb_alias}</a>";
+						. alias_info_popup($values['id']) . "\" data-html=\"true\">" . htmlspecialchars($pfb_alias) . "</a>";
 				}
 			}
 
 			if ($mode == 'js') {
-				print $response = "{$pfb_alias}||{$values['count']}||{$packets}||{$values['update']}||{$values['img']}\n";
+				print "{$alias_html}||{$values['count']}||{$packets}||{$values['update']}||{$values['img']}||{$group}\n";
 			}
 			else {
-				print ("<tr>
-						<td><small>{$pfb_alias}</small></td>
+				print ("<tr data-pfb-group=\"{$group}\">
+						<td><small>{$alias_html}</small></td>
 						<td><small>{$values['count']}</small></td>
 						<td><small>{$packets}</small></td>
-						<td><small>{$values['update']}</small></td>
+						<td><small>" . htmlspecialchars($values['update']) . "</small></td>
 						<td>{$values['img']}</td>
 				</tr>");
 
@@ -986,6 +978,9 @@ function pfBlockerNG_get_table($mode='', $pfb_table) {
 }
 ?>
 
+<style>
+#pfb-tbl .pfb-widget-upstream { font-style: italic; opacity: 0.65; }
+</style>
 <form id="formicons" action="/widgets/widgets/pfblockerng.widget.php" method="post" class="form-horizontal">
 <input type="hidden" name="pfblockerngack" id="pfblockerngack" value="">
 <input type="hidden" name="pfblockerngclear" id="pfblockerngclear" value="">
@@ -1023,7 +1018,7 @@ function pfBlockerNG_get_table($mode='', $pfb_table) {
 
 	<!-- Print main table header -->
 	<div class="table-responsive" style="max-height: <?=$pfb['maxheight'];?>px; overflow: auto;">
-		<table id="pfb-tbl" class="table table-striped table-hover table-condensed sortable-theme-bootstrap" data-sortable>
+		<table id="pfb-tbl" class="table table-striped table-hover table-condensed sortable-theme-bootstrap" data-sortable data-pfb-sortmix="<?=htmlspecialchars($pfb['sortmix'])?>">
 			<thead>
 				<tr>
 					<th id="pfB_col1" ><?=gettext("Alias");?></th>
@@ -1037,7 +1032,7 @@ function pfBlockerNG_get_table($mode='', $pfb_table) {
 			</thead>
 			<tbody id="pfBNG-table">
 				<!-- Print table contents, subsequent refresh by javascript function -->
-				<?=pfBlockerNG_get_table('', $pfb_table);?>
+				<?=pfb_widget_table_call($pfb_table);?>
 			</tbody>
 		</table>
 	</div>
@@ -1045,6 +1040,10 @@ function pfBlockerNG_get_table($mode='', $pfb_table) {
 
 <!-- Widget customization settings wrench -->
 </div>
+<?php
+// issue #1497: pfSense dashboard widget-include convention provides $widgetname.
+/** @var string $widgetname */
+?>
 <div id="widget-<?=$widgetname?>_panel-footer" class="panel-footer collapse">
 
 <form action="/widgets/widgets/pfblockerng.widget.php" method="post" class="form-horizontal">
@@ -1053,6 +1052,13 @@ function pfBlockerNG_get_table($mode='', $pfb_table) {
 		<div class="col-sm-2 checkbox">
 			<label><input type="checkbox" name="pfb_popup" value="on"
 				<?=($pfb['popup'] == "on" ? 'checked' : '')?> /></label>
+		</div>
+	</div>
+	<div class="form-group">
+		<label for="pfb_show_agg" class="col-sm-8 control-label"><?=gettext('Show Aggregated Aliases')?></label>
+		<div class="col-sm-2 checkbox">
+			<label><input type="checkbox" name="pfb_show_agg" value="on"
+				<?=($pfb['show_agg'] == "on" ? 'checked' : '')?> /></label>
 		</div>
 	</div>
 	<div class="form-group">
@@ -1075,13 +1081,6 @@ function pfBlockerNG_get_table($mode='', $pfb_table) {
 				<option value="<?=$cleardnsbl?>" <?=($cleardnsbl == $pfb['cleardnsbl'] ? 'selected' : '')?> ><?=$cleartype?></option>
 			<?php endforeach;?>
 			</select>
-		</div>
-	</div>
-	<div class="form-group">
-		<label for="pfb_dnsblquery" class="col-sm-8 control-label">Enter DNSBL Resolver Query frequency (Default:5)</label>
-		<div class="col-sm-4">
-			<input type="number" name="pfb_dnsblquery" value="<?=$pfb['dnsblquery']?>"
-				min="5" max="300" class="form-control" />
 		</div>
 	</div>
 	<div class="form-group">

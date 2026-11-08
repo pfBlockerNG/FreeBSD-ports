@@ -38,6 +38,7 @@ require_once('guiconfig.inc');
 require_once('globals.inc');
 require_once('/usr/local/pkg/pfblockerng/pfblockerng.inc');
 
+global $pfb;
 pfb_global();
 
 // Get log files from directory
@@ -57,13 +58,8 @@ function getlogs($logdir, $log_extentions = array('log')) {
 	}
 
 	// Convert to filenames only
-	if (count($log_filenames) > 0) {
-		$log_totalfiles = count($log_filenames);
-		for ($cnt = 0; $cnt < $log_totalfiles; $cnt++) {
-			$log_filenames[$cnt] = basename($log_filenames[$cnt]);
-		}
-	}
-	
+	$log_filenames = array_map('basename', $log_filenames);
+
 	asort($log_filenames);
 	return $log_filenames;
 }
@@ -78,7 +74,7 @@ function getlogs($logdir, $log_extentions = array('log')) {
 $pfb_logtypes = array(	'defaultlogs'	=> array('name'		=> 'Log Files',
 						'logdir'	=> "{$pfb['logdir']}/",
 						'logs'		=> array('pfblockerng.log', 'error.log', 'ip_block.log', 'ip_permit.log', 'ip_match.log',
-									'dnsbl.log', 'unified.log', 'extras.log', 'dnsbl_parsed_error.log', 'dns_reply.log',
+									'dnsbl.log', 'unified.log', 'extras.log', 'dnsbl_parsed_error.log', 'ip_parsed_error.log', 'dns_reply.log',
 									'py_error.log', 'maxmind_ver', 'wizard.log'),
 						'download'	=> TRUE,
 						'clear'		=> TRUE
@@ -129,6 +125,13 @@ $pfb_logtypes = array(	'defaultlogs'	=> array('name'		=> 'Log Files',
 						'download'	=> TRUE,
 						'clear'		=> TRUE
 						),
+			// issue #1250: machine-generated match artifacts, relocated off matchdir.
+			'matchgenlogs'	=> array('name'		=> 'Match Generated Files',
+						'ext'		=> 'txt',
+						'logdir'	=> "{$pfb['matchgendir']}/",
+						'download'	=> TRUE,
+						'clear'		=> TRUE
+						),
 			'nativelogs'	=> array('name'		=> 'Native Files',
 						'ext'		=> 'txt',
 						'logdir'	=> "{$pfb['nativedir']}/",
@@ -153,25 +156,19 @@ $pfb_logtypes = array(	'defaultlogs'	=> array('name'		=> 'Log Files',
 						'download'	=> TRUE,
 						'clear'		=> FALSE
 						),
-			'unbound'	=> array('name'		=> 'DNSBL Unbound mode',
-						'ext'		=> array('pfb_dnsbl.conf'),
-						'logdir'	=> "{$pfb['dnsbldir']}/",
-						'download'	=> TRUE,
-						'clear'		=> FALSE
-						),
-			'python'	=> array('name'		=> 'DNSBL Python mode',
+			'python'	=> array('name'		=> 'DNSBL mode',
 						'ext'		=> array('pfb_py*.txt'),
 						'logdir'	=> "{$pfb['dnsbldir']}/",
 						'download'	=> TRUE,
 						'clear'		=> FALSE
 						),
-			'dnsbl_tld'	=> array('name'		=> 'DNSBL TLD List',
-						'ext'		=> array('dnsbl_tld'),
+			'dnsbl_psl'	=> array('name'		=> 'DNSBL Public Suffix List',
+						'ext'		=> array('dnsbl_psl'),
 						'logdir'	=> '/usr/local/pkg/pfblockerng/',
 						'download'	=> TRUE,
 						'clear'		=> FALSE
 						),
-			'dnsbl_safe'	=> array('name'		=> 'DNSBL Safe Search',
+			'dnsbl_safe'	=> array('name'		=> 'DNSBL SafeSearch',
 						'ext'		=> array('pfb_dnsbl*.conf'),
 						'logdir'	=> '/usr/local/pkg/pfblockerng/',
 						'download'	=> TRUE,
@@ -184,12 +181,6 @@ $pfb_logtypes = array(	'defaultlogs'	=> array('name'		=> 'Log Files',
 						'clear'		=> TRUE
 						)
 		);
-
-if ($pfb['dnsbl_py_blacklist']) {
-	unset($pfb_logtypes['unbound']);
-} else {
-	unset($pfb_logtypes['python']);
-}
 
 // Dynamically add any configured DNSBL Categeory Feeds
 if ($pfb['blconfig'] &&
@@ -206,22 +197,72 @@ if ($pfb['blconfig'] &&
 	}
 }
 
-// Function to validate file/path
-function pfb_validate_filepath($validate, $pfb_logtypes) {
-
-	$allowed_path = array();
-	foreach ($pfb_logtypes as $type) {
-		$allowed_path[$type['logdir']] = '';
-	}
+/*	Function to validate file/path for a requested action ('load'/'download'/'clear').
+	issue #1649: authorize against each logtype's OWN tuple -- its logdir, the capability
+	flag for the requested action, and its filename whitelist -- never the union of every
+	logtype's logdir. The whitelist is the logtype's enumerated 'logs' basenames (exact
+	match, as the page's own dropdown offers) or its 'ext' patterns (glob "*<ext>",
+	mirroring getlogs()). A logtype must carry one or the other; a bare logdir match never
+	authorizes, so a sibling logtype sharing a directory (e.g. masterfiles + top1m both
+	under /var/db/pfblockerng/) cannot lend blanket access to unlisted files there.	*/
+function pfb_validate_filepath($validate, $pfb_logtypes, $action) {
 
 	$path = pathinfo($validate, PATHINFO_DIRNAME) . '/';
 	$file = basename($validate);
 
-	if ($path == '/var/unbound/' && substr($file, 0, 4) != 'pfb_' && !file_exists("{$file}")) {
+	if ($path == '/var/unbound/' && !str_starts_with($file, 'pfb_') && !file_exists("{$file}")) {
 		return FALSE;
 	}
 
-	return isset($allowed_path[$path]);
+	foreach ($pfb_logtypes as $type) {
+		if ($type['logdir'] != $path) {
+			continue;
+		}
+
+		// The requested action must be enabled for this logtype ('load' has no flag).
+		if (($action == 'clear' && empty($type['clear'])) ||
+		    ($action == 'download' && empty($type['download']))) {
+			continue;
+		}
+
+		// Enumerated logs list: authorize only its exact basenames.
+		if (isset($type['logs'])) {
+			if (in_array($file, (array)$type['logs'], TRUE)) {
+				return TRUE;
+			}
+			continue;
+		}
+		if (isset($type['ext'])) {
+			foreach ((array)$type['ext'] as $extention) {
+				if ($extention == '*' || fnmatch("*{$extention}", $file)) {
+					return TRUE;
+				}
+			}
+		}
+	}
+
+	return FALSE;
+}
+
+function pfb_clear_logfile($path) {
+	// Keep the Python error log in place while clearing its contents.
+	if (strpos($path, 'py_error.log') !== FALSE) {
+		if (($fp = @fopen("{$path}", 'r+')) !== FALSE) {
+			@ftruncate($fp, 0);
+			@fclose($fp);
+		}
+		return;
+	}
+
+	unlink_if_exists($path);
+
+	if (strpos($path, 'dnsbl.log') !== FALSE ||
+	    strpos($path, 'unified.log') !== FALSE ||
+	    strpos($path, 'dns_reply.log') !== FALSE) {
+		touch($path);
+		@chown($path, 'unbound');
+		@chgrp($path, 'unbound');
+	}
 }
 
 $pconfig = array();
@@ -241,7 +282,7 @@ if (isset($_REQUEST) && isset($_REQUEST['ajax'])) {
 
 	clearstatcache();
 	$pfb_logfilename = htmlspecialchars($_REQUEST['file']);
-	if (!pfb_validate_filepath($pfb_logfilename, $pfb_logtypes)) {
+	if (!pfb_validate_filepath($pfb_logfilename, $pfb_logtypes, 'load')) {
 		print ("|3|" . gettext('Invalid filename/path') . "|IA==|");
 		exit;
 	}
@@ -249,12 +290,19 @@ if (isset($_REQUEST) && isset($_REQUEST['ajax'])) {
 	// Load log
 	if ($_REQUEST['action'] == 'load') {
 		if (!file_exists($pfb_logfilename)) {
-			print ("|0|" . gettext('Log file does not exist') . "|IA==|");
+			print ("|1|" . gettext('Log file does not exist') . "|IA==|");
 		}
 		elseif (($fhandle = @fopen("{$pfb_logfilename}", 'r')) !== FALSE) {
 
-			$pfb_logfilename_esc = escapeshellarg($pfb_logfilename);
-			$linecnt = exec("{$pfb['grep']} -c ^ {$pfb_logfilename_esc} 2>&1");
+			$linecnt = pfb_count_lines($pfb_logfilename);
+
+			// issue #1156/#1261: pfb_count_lines() returns NULL on a read failure (e.g.
+			// a TOCTOU race after the fopen() above); silently skipping the cap would
+			// stream the whole file unbounded, so answer with the handler's error convention.
+			if ($linecnt === NULL) {
+				print ("|2|" . gettext('Failed to determine log line count') . "|IA==|");
+				exit;
+			}
 			$maxcnt = 10000; // Max line limit
 
 			$validate = FALSE;
@@ -273,11 +321,14 @@ if (isset($_REQUEST) && isset($_REQUEST['ajax'])) {
 					continue;
 				}
 
-				$data .= htmlspecialchars($line, ENT_NOQUOTES);
+				// Raw: this only ever feeds the #fileContent <textarea> via JS .val()
+				// (never HTML-parsed). A future .html()/innerHTML consumer must escape
+				// at that point instead.
+				$data .= $line;
 				$linecnt++;
 			}
 
-			if (!empty($data)) {
+			if ($linecnt > 0) {
 				$data = base64_encode($data);
 				print ("|0|File successfully loaded: Total Lines: {$linecnt}{$line_limit}|{$data}|");
 				if (isset($data)) {
@@ -289,7 +340,7 @@ if (isset($_REQUEST) && isset($_REQUEST['ajax'])) {
 			}
 		}
 		else {
-			print ("|0|" . gettext('Failed to read log file') . "|IA==|");
+			print ("|2|" . gettext('Failed to read log file') . "|IA==|");
 		}
 		exit;
 	}
@@ -299,52 +350,43 @@ if (isset($_REQUEST) && isset($_REQUEST['ajax'])) {
 if (isset($pconfig['logFile']) && !empty($pconfig['logFile']) && (isset($pconfig['download']) || isset($pconfig['clear']))) {
 	
 	$s_logfile = htmlspecialchars($pconfig['logFile']);
-	if (!pfb_validate_filepath($s_logfile, $pfb_logtypes)) {
-		print ("|0|" . gettext('Invalid filename/path') . ".|");
+	// issue #1649: validate against the capability actually requested (clear wins,
+	// mirroring the clear-then-download branch order below).
+	$pfb_log_action = !empty($pconfig['clear']) ? 'clear' : 'download';
+	if (!pfb_validate_filepath($s_logfile, $pfb_logtypes, $pfb_log_action)) {
+		print ("|3|" . gettext('Invalid filename/path') . "|IA==|");
 		exit;
 	}
 
 	// Clear selected file
 	if ($pconfig['clear']) {
-
-		// Python log file must be truncated to not lose python file pointer
-		if (strpos($s_logfile, 'py_error.log') !== FALSE) {
-			$fp = @fopen("{$s_logfile}", 'r+');
-			@ftruncate($fp, 0);
-			@fclose($fp);
-		} else {
-			unlink_if_exists($s_logfile);
-
-			if (strpos($s_logfile, 'dnsbl.log') !== FALSE ||
-			    strpos($s_logfile, 'unified.log') !== FALSE ||
-			    strpos($s_logfile, 'dns_reply.log') !== FALSE) {
-
-				touch($s_logfile);
-				@chown($s_logfile, 'unbound');
-				@chgrp($s_logfile, 'unbound');
-			}
-		}
+		pfb_clear_logfile($s_logfile);
 	}
 
 	// Download log
 	elseif($pconfig['download']) {
 		if (file_exists($s_logfile)) {
 			session_cache_limiter('public');
-			$fd = @fopen($s_logfile, "rb");
-			header("Content-Type: application/octet-stream");
-			header("Content-Length: " . filesize($s_logfile));
-			header("Content-Disposition: attachment; filename=\"" .
-				trim(htmlentities(basename($s_logfile))) . "\"");
-			if (isset($_SERVER['HTTPS'])) {
-				header('Pragma: ');
-				header('Cache-Control: ');
-			} else {
-				header("Pragma: private");
-				header("Cache-Control: private, must-revalidate");
+			// issue #1097: a lost TOCTOU race must skip headers/exit, not throw on fpassthru(FALSE)
+			if (($fd = @fopen($s_logfile, "rb")) !== FALSE) {
+				header("Content-Type: application/octet-stream");
+				// issue #1097: size from the open handle -- the path can vanish after fopen()
+				if (($fd_stat = fstat($fd)) !== FALSE) {
+					header("Content-Length: " . $fd_stat['size']);
+				}
+				header("Content-Disposition: attachment; filename=\"" .
+					trim(htmlentities(basename($s_logfile))) . "\"");
+				if (isset($_SERVER['HTTPS'])) {
+					header('Pragma: ');
+					header('Cache-Control: ');
+				} else {
+					header("Pragma: private");
+					header("Cache-Control: private, must-revalidate");
+				}
+				@fpassthru($fd);
+				@fclose($fd);
+				exit;
 			}
-			@fpassthru($fd);
-			@fclose($fd);
-			exit;
 		}
 	}
 } else {
@@ -353,24 +395,27 @@ if (isset($pconfig['logFile']) && !empty($pconfig['logFile']) && (isset($pconfig
 
 $pgtitle = array(gettext('Firewall'), gettext('pfBlockerNG'), gettext('Log Browser'));
 $pglinks = array('', '/pfblockerng/pfblockerng_general.php', '@self');
+$shortcut_section = 'pfblockerng';
 include_once('head.inc');
 
 // Define default Alerts Tab href link (Top row)
 $get_req = pfb_alerts_default_page();
 
 $tab_array	= array();
-$tab_array[]	= array(gettext('General'),	false,	'/pfblockerng/pfblockerng_general.php');
-$tab_array[]	= array(gettext('IP'),		false,	'/pfblockerng/pfblockerng_ip.php');
-$tab_array[]	= array(gettext('DNSBL'),	false,	'/pfblockerng/pfblockerng_dnsbl.php');
-$tab_array[]	= array(gettext('Update'),	false,	'/pfblockerng/pfblockerng_update.php');
-$tab_array[]	= array(gettext('Reports'),	false,	"/pfblockerng/pfblockerng_alerts.php{$get_req}");
-$tab_array[]	= array(gettext('Feeds'),	false,	'/pfblockerng/pfblockerng_feeds.php');
-$tab_array[]	= array(gettext('Logs'),	true,	'/pfblockerng/pfblockerng_log.php');
-$tab_array[]	= array(gettext('Sync'),	false,	'/pfblockerng/pfblockerng_sync.php');
-display_top_tabs($tab_array, true);
+$tab_array[]	= array(gettext('General'),	FALSE,	'/pfblockerng/pfblockerng_general.php');
+$tab_array[]	= array(gettext('IP'),		FALSE,	'/pfblockerng/pfblockerng_ip.php');
+$tab_array[]	= array(gettext('DNS'),		FALSE,	'/pfblockerng/pfblockerng_dns_general.php');
+$tab_array[]	= array(gettext('Update'),	FALSE,	'/pfblockerng/pfblockerng_update.php');
+$tab_array[]	= array(gettext('Reports'),	FALSE,	"/pfblockerng/pfblockerng_alerts.php{$get_req}");
+$tab_array[]	= array(gettext('Feeds'),	FALSE,	'/pfblockerng/pfblockerng_feeds.php');
+$tab_array[]	= array(gettext('Logs'),	TRUE,	'/pfblockerng/pfblockerng_log.php');
+$tab_array[]	= array(gettext('Sync'),	FALSE,	'/pfblockerng/pfblockerng_sync.php');
+pfb_software_add_tab($tab_array);
+display_top_tabs($tab_array, TRUE);
+pfb_print_pending_changes_box();
 
 // Create Form
-$form = new Form(false);
+$form = new Form(FALSE);
 
 // Build 'Shortcut Links' section
 $section = new Form_Section('Log/File Browser selections');
@@ -391,7 +436,8 @@ $section->addInput(new Form_Select(
 // Collect selected logs
 $logs = array();
 $clearable = $downloadable = FALSE;
-$selected = !empty($pconfig['logtype']) ? $pconfig['logtype'] : 'defaultlogs';
+// issue #1198: a scalar logtype that is not a key here warns at the offset below -- fall back.
+$selected = array_key_exists($pconfig['logtype'], $pfb_logtypes) ? $pconfig['logtype'] : 'defaultlogs';
 $pfb_sel = $pfb_logtypes[$selected];
 
 if (isset($pfb_sel['logs'])) {
@@ -437,7 +483,7 @@ if ($clearable) {
 $section = new Form_Section('Log/File Details');
 $section->addInput(new Form_StaticText(
 	NULL,
-	'<div style="display:none;" id="fileStatusBox"><strong id="fileStatus"></strong></div>'
+	'<div id="fileStatusBox"><strong id="fileStatus">' . gettext('Select Log/File to load') . '</strong></div>'
 	. '<div style="display:none;" id="filePathBox"><strong>Log/File Path:&emsp;</strong>'
 	. '<div style="display:inline;" id="fbTarget"></div>'
 	. '<div style="display:inline; margin-right:10px;" class="pull-right" id="fileRefreshBtn">'
@@ -452,12 +498,7 @@ $section->addInput(new Form_Textarea(
 	NULL,
 	''
 ))->removeClass('form-control')->addClass('row-fluid col-sm-12')->setAttribute('rows', '30')->setAttribute('wrap', 'off')
-  ->setAttribute('style', 'background:#fafafa; width: 100%');
-
-// Scroll to end of page when loading logs
-$section->addInput(new Form_StaticText(
-	NULL,
-	'<div id="endofpage"></div>'));
+  ->setAttribute('readonly', 'readonly')->setAttribute('style', 'width: 100%');
 
 $form->add($section);
 
@@ -468,14 +509,11 @@ $form->addGlobal(new Form_Input('action', 'action', 'hidden', ''));
 $form->addGlobal(new Form_Input('load', 'load', 'hidden', ''));
 $form->addGlobal(new Form_Input('file', 'file', 'hidden', ''));
 
-$form->addGlobal(new Form_Input('fileStatus', 'fileStatus', 'hidden', ''));
-$form->addGlobal(new Form_Input('fileStatusBox', 'fileStatusBox', 'hidden', ''));
-$form->addGlobal(new Form_Input('filePathBox', 'filePathBox', 'hidden', ''));
-$form->addGlobal(new Form_Input('fbTarget', 'fbTarget', 'hidden', ''));
-$form->addGlobal(new Form_Input('fileRefreshBtn', 'fileRefreshBtn', 'hidden', ''));
-
 print($form);
 ?>
+<!-- issue #1881: the auto-scroll target lives OUTSIDE the form -- as a Form_StaticText
+     row it was an empty .form-group whose theme border drew a stray separator. -->
+<?=pfb_log_anchor_layout_render()['endofpage']?>
 
 <script type="text/javascript">	
 //<![CDATA[

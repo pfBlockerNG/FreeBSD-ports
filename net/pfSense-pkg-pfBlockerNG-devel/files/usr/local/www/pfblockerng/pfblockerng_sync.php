@@ -27,23 +27,25 @@ require_once('/usr/local/pkg/pfblockerng/pfblockerng.inc');
 global $pfb;
 pfb_global();
 
-$pfb['sconfig'] = config_get_path('installedpackages/pfblockerngsync/config/0', []);
+$pfb['sconfig'] = PfbConfig::readSection('installedpackages/pfblockerngsync/config/0');
 
 $pconfig = array();
-$pconfig['varsynconchanges']	= $pfb['sconfig']['varsynconchanges']	?: '';
-$pconfig['varsynctimeout']	= $pfb['sconfig']['varsynctimeout']	?: 150;
-$pconfig['syncinterfaces']	= $pfb['sconfig']['syncinterfaces']	?: '';
+$pconfig['varsynconchanges']	= ($pfb['sconfig']['varsynconchanges'] ?? '') ?: '';
+$pconfig['varsynctimeout']	= ($pfb['sconfig']['varsynctimeout'] ?? 150) ?: 150;
+// issue #3452: the registry owns the default; the page stores one of the three scope tokens.
+$pconfig['syncscope']	= PfbConfig::read('sync/syncscope');
 
 // Select field options
 $options_varsynconchanges	= [ 'disabled' => 'Do not sync this package configuration', 'auto' => 'Sync to configured system backup server', 'manual' => 'Sync to host(s) defined below' ];
+$options_syncscope		= [ 'policy' => 'Policy and lists (local settings stay local)', 'all' => 'All settings (legacy)', 'lists' => 'Lists and global settings only (legacy)' ];
+
+// $input_errors is read unconditionally in the render section below, so it must be
+// defined on every request path. Initialise it once.
+$input_errors = array();
 
 // Validate input fields and save
 if ($_POST) {
 	if (isset($_POST['save'])) {
-
-		if (isset($input_errors)) {
-			unset($input_errors);
-		}
 
 		// Validate varsynctimeout. Default 150 and max at 5000
 		$_POST['varsynctimeout'] = min(5000, pfb_filter($_POST['varsynctimeout'], PFB_FILTER_NUM, 'Sync', 150));
@@ -61,24 +63,25 @@ if ($_POST) {
 			}
 		}
 
+		// The scope is a closed vocabulary: anything else is an input error, never normalized.
+		if (!is_string($_POST['syncscope'] ?? NULL) || !array_key_exists($_POST['syncscope'], $options_syncscope)) {
+			$input_errors[] = gettext('The Sync scope is invalid.');
+		}
+
 		$rowhelper_exist = array();
 		foreach ($_POST as $key => $value) {
 
 			// Parse 'rowhelper' fields and save new values
 			if (strpos($key, '-') !== FALSE) {
 				$k_field = explode('-', $key);
+				if (in_array($k_field[0], array('varsyncipaddress', 'varsyncusername', 'varsyncpassword'), TRUE)) {
+					$value = pfb_sanitize_text((string) $value);
+				}
 
 				// Collect all rowhelper keys
 				$rowhelper_exist[$k_field[1]] = '';
 
 				switch ($k_field[0]) {
-					case 'syncinterfaces':
-						if ($value == 'on' || $value == '') {
-							//
-						} else {
-							$input_errors[] = gettext('Invalid XMLRPC Replication target enabled');
-						}
-						break;
 					case 'varsyncusername':
 						// Validate Username field
 						if (preg_match("/[^a-zA-Z0-9\._-]/", $value)) {
@@ -89,12 +92,17 @@ if ($_POST) {
 						}
 						break;
 					case 'varsyncpassword':
-						$value = htmlspecialchars($value);
+						// Store verbatim: the password is a secret credential used for
+						// XMLRPC authentication, not rendered as raw HTML. HTML-escaping
+						// it here corrupted any password containing & " ' < > (the
+						// escaped form was sent to the peer, breaking auth). Form_Input
+						// escapes it for safe display on re-render.
+						$value = pfb_sync_filter_password($value);
 						break;
 					case 'varsyncipaddress':
 						// Validate IP Address/Hostname
 						if (($_POST['varsynconchanges'] == 'auto') && (mb_strlen(strval($value)) < 1)) {
-							continue;
+							continue 2;
 						}
 						$value = pfb_filter($value, PFB_FILTER_HOSTNAME, 'Sync');
 						if (empty($value)) {
@@ -114,25 +122,32 @@ if ($_POST) {
 						}
 						break;
 					default:
-						continue;
-						break;
+						continue 2;
 				}
 				$pfb['sconfig']['row'][$k_field[1]][$k_field[0]] = $value;
+				// foreign structure: pfblockerngsync/config/0/row is a dynamic XMLRPC row blob, not in registry
 				config_set_path("installedpackages/pfblockerngsync/config/0/row/{$k_field[1]}/{$k_field[0]}", $pfb['sconfig']['row'][$k_field[1]][$k_field[0]]);
 
-				// Clear checkbox field when POST is empty
-				if ($pfb['sconfig']['row'][$k_field[1]]['varsyncdestinenable'] == 'on' &&
-				    !isset($_POST["varsyncdestinenable-{$k_field[1]}"])) {
-					$pfb['sconfig']['row'][$k_field[1]]['varsyncdestinenable'] = '';
-					config_set_path("installedpackages/pfblockerngsync/config/0/row/{$k_field[1]}/varsyncdestinenable", $pfb['sconfig']['row'][$k_field[1]]['varsyncdestinenable']);
-				}
 			}
+		}
+
+		// Per-target enable checkbox: an unchecked box sends no POST field, so the
+		// in-loop switch cannot persist it. Resolve it for every touched row after
+		// the loop -- 'on' when checked, '' otherwise -- so a new or re-enabled
+		// target stores 'on' (the XMLRPC engine gates on $sh['varsyncdestinenable'])
+		// and a new or cleared disabled target stores the canonical '' (not absent).
+		foreach (array_keys($rowhelper_exist) as $r_idx) {
+			$enabled = ((($_POST["varsyncdestinenable-{$r_idx}"] ?? '') == 'on') ? 'on' : '');
+			$pfb['sconfig']['row'][$r_idx]['varsyncdestinenable'] = $enabled;
+			// foreign structure: pfblockerngsync/config/0/row is a dynamic XMLRPC row blob, not in registry
+			config_set_path("installedpackages/pfblockerngsync/config/0/row/{$r_idx}/varsyncdestinenable", $enabled);
 		}
 
 		// Remove all undefined rowhelpers
 		foreach ($pfb['sconfig']['row'] as $r_key => $row) {
 			if (!isset($rowhelper_exist[$r_key])) {
 				unset($pfb['sconfig']['row'][$r_key]);
+				// foreign structure: pfblockerngsync/config/0/row is a dynamic XMLRPC row blob, not in registry
 				config_del_path("installedpackages/pfblockerngsync/config/0/row/{$r_key}");
 			}
 		}
@@ -141,10 +156,13 @@ if ($_POST) {
 
 			$pfb['sconfig']['varsynconchanges']	= $_POST['varsynconchanges']						?: '';
 			$pfb['sconfig']['varsynctimeout']	= $_POST['varsynctimeout']						?: '';
-			$pfb['sconfig']['syncinterfaces']	= pfb_filter($_POST['syncinterfaces'], PFB_FILTER_ON_OFF, 'Sync')	?: '';
+			$pfb['sconfig']['syncscope']		= $_POST['syncscope'];
+			unset($pfb['sconfig']['syncinterfaces']);
 
-			config_set_path('installedpackages/pfblockerngsync/config/0', $pfb['sconfig']);
+			PfbConfig::writeSection('installedpackages/pfblockerngsync/config/0', $pfb['sconfig']);
 			write_config('[pfBlockerNG] save XMLRPC sync settings');
+			// Saving the Sync page is the deliberate role flip: this node may send its policy again (#3452).
+			pfb_sync_receive_accepted_clear($pfb['dbdir']);
 			header('Location: /pfblockerng/pfblockerng_sync.php');
 			exit;
 		}
@@ -153,6 +171,7 @@ if ($_POST) {
 
 $pgtitle = array(gettext('Firewall'), gettext('pfBlockerNG'), gettext('Sync'));
 $pglinks = array('', '/pfblockerng/pfblockerng_general.php', '@self');
+$shortcut_section = 'pfblockerng';
 include_once('head.inc');
 
 if ($input_errors) {
@@ -163,15 +182,28 @@ if ($input_errors) {
 $get_req = pfb_alerts_default_page();
 
 $tab_array	= array();
-$tab_array[]	= array(gettext('General'),	false,	'/pfblockerng/pfblockerng_general.php');
-$tab_array[]	= array(gettext('IP'),		false,	'/pfblockerng/pfblockerng_ip.php');
-$tab_array[]	= array(gettext('DNSBL'),	false,	'/pfblockerng/pfblockerng_dnsbl.php');
-$tab_array[]	= array(gettext('Update'),	false,	'/pfblockerng/pfblockerng_update.php');
-$tab_array[]	= array(gettext('Reports'),	false,	"/pfblockerng/pfblockerng_alerts.php{$get_req}");
-$tab_array[]	= array(gettext('Feeds'),	false,	'/pfblockerng/pfblockerng_feeds.php');
-$tab_array[]	= array(gettext('Logs'),	false,	'/pfblockerng/pfblockerng_log.php');
-$tab_array[]	= array(gettext('Sync'),	true,	'/pfblockerng/pfblockerng_sync.php');
-display_top_tabs($tab_array, true);
+$tab_array[]	= array(gettext('General'),	FALSE,	'/pfblockerng/pfblockerng_general.php');
+$tab_array[]	= array(gettext('IP'),		FALSE,	'/pfblockerng/pfblockerng_ip.php');
+$tab_array[]	= array(gettext('DNS'),		FALSE,	'/pfblockerng/pfblockerng_dns_general.php');
+$tab_array[]	= array(gettext('Update'),	FALSE,	'/pfblockerng/pfblockerng_update.php');
+$tab_array[]	= array(gettext('Reports'),	FALSE,	"/pfblockerng/pfblockerng_alerts.php{$get_req}");
+$tab_array[]	= array(gettext('Feeds'),	FALSE,	'/pfblockerng/pfblockerng_feeds.php');
+$tab_array[]	= array(gettext('Logs'),	FALSE,	'/pfblockerng/pfblockerng_log.php');
+$tab_array[]	= array(gettext('Sync'),	TRUE,	'/pfblockerng/pfblockerng_sync.php');
+pfb_software_add_tab($tab_array);
+display_top_tabs($tab_array, TRUE);
+pfb_print_pending_changes_box();
+
+// foreign key: hasync/synchronizerules is a pfSense core key, not in registry
+if (pfblockerng_sync_dnsblip_mismatch($pconfig['syncscope'], $pconfig['varsynconchanges'], PfbConfig::read('gen/enable_cb'),
+	PfbConfig::read('dnsbl/pfb_dnsbl'), PfbConfig::read('dnsbl/action'), config_get_path('hasync/synchronizerules'))) {
+	print_info_box(gettext('<p><strong>DNSBL IP rules may be skipped on the High Availability peer.</strong></p>'
+		. '<p><strong>System &gt; High Availability Sync</strong> copies firewall rules, but <strong>Lists and global settings only (legacy)</strong> omits the DNSBL settings needed for the <code>pfB_DNSBLIP_v4</code> and <code>pfB_DNSBLIP_v6</code> aliases.</p>'
+		. '<ul>'
+		. '<li>Enable matching DNSBL IP settings on both nodes, or choose a scope that copies those settings.</li>'
+		. '<li>If the peer still reports <code>DNSBL disabled</code>, re-select its <strong>IPv4 VIP</strong> or <strong>IPv6 VIP</strong> under <strong>DNSBL Virtual IP</strong> and save; a re-created VIP can leave a stale selection.</li>'
+		. '</ul>'), 'warning');
+}
 
 $form = new Form('Save XMLRPC sync settings');
 
@@ -179,9 +211,9 @@ $section = new Form_Section('XMLRPC Sync Settings');
 $section->addInput(new Form_StaticText(
 	'Links',
 	'<small>'
-	. '<a href="/firewall_aliases.php" target="_blank">Firewall Aliases</a>&emsp;'
-	. '<a href="/firewall_rules.php" target="_blank">Firewall Rules</a>&emsp;'
-	. '<a href="/status_logs_filter.php" target="_blank">Firewall Logs</a></small>'
+	. '<a href="/firewall_aliases.php" target="_blank" rel="noopener noreferrer">Firewall Aliases</a>&emsp;'
+	. '<a href="/firewall_rules.php" target="_blank" rel="noopener noreferrer">Firewall Rules</a>&emsp;'
+	. '<a href="/status_logs_filter.php" target="_blank" rel="noopener noreferrer">Firewall Logs</a></small>'
 ));
 
 $section->addInput(new Form_Select(
@@ -189,9 +221,12 @@ $section->addInput(new Form_Select(
 	'Enable Sync',
 	$pconfig['varsynconchanges'],
 	$options_varsynconchanges
-))->setHelp('When enabled, this will sync all configuration settings to the Replication Targets.<br /><br />'
-		. '<b>Important:</b> While using "Sync to hosts defined below", only sync from host A to B, A to C'
-		. '<br /> but <b>do not</b> enable XMLRPC sync <b>to</b> A. This will result in a loop!');
+))->setHelp('Push this firewall\'s pfBlockerNG configuration to other firewalls.'
+		. '<ul>'
+		. '<li><strong>Sync to configured system backup server</strong>: use the peer under <strong>System &gt; High Availability Sync</strong>; ignore <strong>XMLRPC Replication Targets</strong> below.</li>'
+		. '<li><strong>Sync to host(s) defined below</strong>: use <strong>XMLRPC Replication Targets</strong> below.</li>'
+		. '</ul>'
+		. '<p><span class="text-danger"><strong>Warning:</strong></span> Replicate from A to B or C, not back to A; two-way replication creates a loop.</p>');
 
 $section->addInput(new Form_Input(
 	'varsynctimeout',
@@ -199,19 +234,39 @@ $section->addInput(new Form_Input(
 	'number',
 	$pconfig['varsynctimeout'],
 	[ 'min' => 0, 'max' => 5000, 'step' => 50, 'placeholder' => 'Enter timeout in seconds' ]
-));
+))->setHelp('Timeout for each replication request. Default: <strong>150 seconds</strong>; blank or <code>0</code> uses the default.');
 
-$section->addInput(new Form_Checkbox(
-	'syncinterfaces',
-	'Disable General/IP/DNSBL tab settings sync',
-	NULL,
-	$pconfig['syncinterfaces'] === 'on' ? true:false,
-	'on'
-))->setHelp('When selected, the \'General\', \'IP\', and \'DNSBL\' tab customizations will not be sync\'d');
+$section->addInput(new Form_Select(
+	'syncscope',
+	'Sync Scope',
+	$pconfig['syncscope'],
+	$options_syncscope
+))->setHelp('<ul>'
+		. '<li><strong>Policy and lists (local settings stay local)</strong>: copies filtering policy and Resolver VIP policy, including <strong>VIP-only mode</strong>. Node-local interfaces, transport ports, gateways, certificates and credentials stay local.</li>'
+		. '<li><strong>All settings (legacy)</strong>: also copies General, IP and DNSBL settings, GeoIP, Reputation, DNSBL Category, SafeSearch, hook entries and shared encrypted-transport/DDR settings.</li>'
+		. '<li><strong>Lists and global settings only (legacy)</strong>: copies lists and global settings without General, IP, DNSBL, pfB-DNS or Resolver VIP settings.</li>'
+		. '</ul><p>The following pfB-DNS settings stay on each firewall in every scope:</p><ul>'
+		. '<li>The <strong>pfB-DNS</strong> enable switch and saved Resolver settings.</li>'
+		. '<li><strong>DNS Name</strong> and <strong>SSL/TLS Certificate</strong>.</li>'
+		. '<li>Transport interface selections and <strong>Advertise DoH on port 443</strong>.</li>'
+		. '<li><strong>Automatic VIP interface</strong> and local ownership records.</li>'
+		. '</ul><p>Received shared settings apply at the receiver\'s next update, or with <strong>Run Now</strong> on <strong>Update</strong>.</p>'
+		. '<p>Set the sender\'s DoT choices first: absent DoT fields clear the receiver\'s stored choices. When DNS Resolver sync is enabled, enable pfB-DNS on the secondary first and disable it there first too.</p>'
+		. '<p>Hook entries are copied only with <strong>All settings (legacy)</strong>; script files and Sync settings are not copied. Automatic HA sync carries only the Sync mode marker.</p>'
+		. '<p><strong>Note:</strong> If <strong>System &gt; High Availability Sync</strong> also copies firewall rules, enable matching DNSBL IP settings on both nodes. Otherwise the peer skips <code>pfB_DNSBLIP_v4</code> and <code>pfB_DNSBLIP_v6</code> rules as "Unresolvable alias".</p>');
 $form->add($section);
 
 $section = new Form_Section('XMLRPC Replication Targets');
-$rowdata = $pfb['sconfig']['row'];
+$section->addInput(new Form_StaticText(
+	'Notes',
+	'<small>'
+	. 'For each target, match the protocol, IP/hostname and port of the remote firewall\'s '
+	. 'webConfigurator &mdash; the protocol (http or https) must match the remote, or the sync will fail.<br />'
+	. 'Using a dedicated user in the <code>admins</code> group on the target (rather than the primary admin '
+	. 'account) is recommended, so the primary account is not exposed for syncing.'
+	. '</small>'
+));
+$rowdata = $pfb['sconfig']['row'] ?? null;
 
 // Add empty row placeholder if no rows defined
 if (empty($rowdata)) {
@@ -237,7 +292,7 @@ foreach ($rowdata as $r_id => $row) {
 		'varsyncdestinenable-' . $r_id,
 		NULL,
 		NULL,
-		isset($row['varsyncdestinenable']) ? ($row['varsyncdestinenable'] === 'on' ? true:false) : false,
+		isset($row['varsyncdestinenable']) && pfb_cfg_toggle_read($row['varsyncdestinenable']) === PfbToggle::On,
 		'on'
 	))->setHelp(($numrows == $rowcounter) ? 'Enable' : NULL)
 	  ->setWidth(1);
@@ -283,7 +338,7 @@ foreach ($rowdata as $r_id => $row) {
 		'varsyncpassword-' . $r_id,
 		NULL,
 		'password',
-		htmlspecialchars($row['varsyncpassword']),
+		$row['varsyncpassword'],
 		[ 'placeholder' => 'Target password' ]
 	))->setHelp(($numrows == $rowcounter) ? 'Target Password' : NULL)
 	  ->setWidth(2);
@@ -307,7 +362,7 @@ $btnadd = new Form_Button(
 );
 $btnadd->removeClass('btn-primary')
 	->addClass('btn-success btn-xs')
-	->setAttribute('title', 'Click to Enable all State fields');
+	->setAttribute('title', 'Add a replication target');
 
 $group = new Form_Group(NULL);
 $group->add(new Form_StaticText(
@@ -318,7 +373,9 @@ $section->add($group);
 
 $form->add($section);
 print ($form);
-print_callout('<strong>Setting changes are applied via CRON or \'Force Update|Reload\' only!</strong>');
+print pfb_sync_receiver_panel(pfb_sync_receive_state_read($pfb['dbdir']), pfb_sync_receive_drift($pfb['dbdir']), pfb_sync_findings_read($pfb['dbdir']), pfb_sync_copied_read($pfb['dbdir']));
+print pfb_sync_sender_panel(pfb_sync_send_state_read($pfb['dbdir']));
+print_callout('<p><strong>Sync to configured system backup server</strong> sends with configuration changes. <strong>Sync to host(s) defined below</strong> sends after each update.</p>');
 
 include('foot.inc');
 ?>

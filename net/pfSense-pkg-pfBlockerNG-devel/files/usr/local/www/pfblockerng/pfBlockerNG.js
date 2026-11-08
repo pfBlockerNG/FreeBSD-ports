@@ -25,7 +25,10 @@ window.onload = function() {
 	if (location.hash) {
 		var elId = location.hash.replace('#','');
 		var scrollToEl = document.getElementById(elId);
-		scrollToEl.scrollIntoView(true);
+		// A hash naming no element (bad/stale bookmark) must not crash onload (#714).
+		if (scrollToEl) {
+			scrollToEl.scrollIntoView(true);
+		}
 
 		// Toggle Collapsible window
 		$("[id$='customlist_panel-body']").removeClass('out').addClass('in');
@@ -113,60 +116,146 @@ function pfb_autocomplete() {
 
 // Remove label columns that contain 'XXXX' (To gain full page width)
 function pfb_remove_label() {
-
-	$('label[class="col-sm-2 control-label"]').each(function() {
-		$("label:contains('XXXX')").remove();
-	});
+	$("label:contains('XXXX')").remove();
 }
 
 
 // Greyout 'Disabled' State fields
-function pfb_chg_state_bkgd() {
+// Greyout selects whose value is 'Disabled' (live on change + on initial load).
+function pfb_greyout(sel) {
 
-	$("select[id^='state-']").click(function() {
+	$(sel).click(function() {
 		if ($(this).val() == 'Disabled') {
-			$(this).css('background-color', 'lightgrey');
+			$(this).css({'background-color': 'lightgrey', 'color': '#212121'});
 		} else {
-			$(this).css('background-color', '');
+			$(this).css({'background-color': '', 'color': ''});
 		}
 	});
-	$("select[id^='state-']").each(function() {
+	$(sel).each(function() {
 		if ($(this).val() == 'Disabled') {
-			$(this).css('background-color', 'lightgrey');
+			$(this).css({'background-color': 'lightgrey', 'color': '#212121'});
 		}
 	});
+}
+
+function pfb_chg_state_bkgd() {
+	pfb_greyout("select[id^='state-']");
+}
+
+// ADR-63: shared drag+anchor-click reorder component, wired into
+// pfblockerng_category.php and pfblockerng_category_edit.php (sort=='no-sort').
+// Row identity for anchor-click move logic is resolved via DOM traversal
+// (closest()/find()), never by parsing an injected control's own id: core's
+// add_row() (pfSenseHelpers.js) only renumbers <input>/<select>/[id^=deleterow],
+// not a generic <button>, so an anchor button's own id can go briefly stale.
+function pfb_reorder_init(container, rowSelector, onAfterMove, dragEnabled) {
+	var $container = $(container);
+	var anchorClass = 'pfb-reorder-anchor';
+	var chkClass = 'pfb-reorder-chk';
+
+	// The injected control (a <span>) is inline/static; inside a float-based
+	// Form_Group (.form-group.repeatable, category_edit.php) it paints BEHIND the
+	// page container and becomes visible-but-unclickable. Lift the <span> into its
+	// own paint layer so the checkbox/anchor receive pointer events. A <tr> row
+	// (category.php) instead gets a real <td> (a natural cell needs no lift).
+	if (!document.getElementById('pfb-reorder-style')) {
+		$('head').append(
+			'<style id="pfb-reorder-style">' +
+			'.pfb-reorder-ctl{white-space:nowrap}' +
+			'span.pfb-reorder-ctl{position:relative;z-index:5;display:inline-block;margin-left:4px}' +
+			'.pfb-reorder-ctl .' + chkClass + '{margin:0 3px;vertical-align:middle}' +
+			'</style>'
+		);
+	}
+
+	function fire() {
+		if (typeof onAfterMove === 'function') {
+			onAfterMove();
+		}
+	}
+
+	$container.find(rowSelector).each(function(i) {
+		if ($(this).find('.' + chkClass).length) {
+			return;
+		}
+		// aria-label: the arrow glyph alone has no accessible name.
+		var controls =
+			'<input type="checkbox" class="' + chkClass + '" id="pfb_reorder_chk-' + i + '" ' +
+			'aria-label="Select this entry to move">' +
+			'<button type="button" class="' + anchorClass + '" id="pfb_reorder_anchor-' + i + '" ' +
+			'aria-label="Move checked entries before this entry (shift-click: after)" ' +
+			'title="Move checked entries before this row (shift-click: after)">&#8645;</button>';
+		// A <tr> must carry a <td> (valid table markup + aligns under the header
+		// column); other row shapes get a <span>.
+		if (this.tagName === 'TR') {
+			$(this).append('<td class="pfb-reorder-ctl">' + controls + '</td>');
+		} else {
+			$(this).append('<span class="pfb-reorder-ctl">' + controls + '</span>');
+		}
+	});
+
+	// Delegated (container-level): survives renumber()'s id/name rewrite of
+	// per-row controls, unlike a per-element binding (ADR-63 S2 Decision 1).
+	$container.off('click.pfb_reorder').on('click.pfb_reorder', '.' + anchorClass, function(e) {
+		var anchorRow = $(this).closest(rowSelector);
+		var rows = $container.find(rowSelector);
+		var checked = rows.filter(function() {
+			return $(this).find('.' + chkClass).is(':checked');
+		}).not(anchorRow).toArray();
+
+		// Preserve the checked rows' relative order: "before" walks top-to-bottom
+		// inserting each just before the anchor; "after" walks bottom-to-top
+		// inserting each just after it (reversing the walk keeps insertion order).
+		if (e.shiftKey) {
+			for (var i = checked.length - 1; i >= 0; i--) {
+				$(checked[i]).insertAfter(anchorRow);
+			}
+		} else {
+			for (var j = 0; j < checked.length; j++) {
+				$(checked[j]).insertBefore(anchorRow);
+			}
+		}
+		fire();
+	});
+
+	if (dragEnabled) {
+		$container.sortable({
+			items: rowSelector,
+			cursor: 'move',
+			distance: 10,
+			opacity: 0.8,
+			helper: function(e, ui) {
+				ui.children().each(function() {
+					$(this).width($(this).width());
+				});
+				return ui;
+			},
+			stop: fire
+		});
+	}
+}
+
+// Sortable-independent DOM-order read, byte-format-identical to
+// $(container).sortable('serialize', {key:'ids[]'}) -- works even when
+// .sortable() was never initialised (ADR-63 S1.8's serialize trap).
+function pfb_reorder_read_order(container, rowSelector) {
+	var parts = [];
+	$(container).find(rowSelector).each(function() {
+		var m = /(.+)[-=_](.+)/.exec(this.id);
+		if (m) {
+			parts.push('ids[]=' + encodeURIComponent(m[2]));
+		}
+	});
+	return parts.join('&');
 }
 
 
 events.push(function() {
 
-	// Disable the 'Row move anchor' when adding a new Feed or whole Alias/Group; until a config save
-	if ((pagetype == 'dnsbl' || pagetype == 'advanced') && disable_move) {
-		$('[name^=Lmove]').each(function () {
-			$(this).prop('disabled', true);
-			$(this).attr('title', 'Save changes before Row move allowed!');
-		})
-		$('[name^=Xmove]').each(function () {
-			$(this).prop('disabled', true);
-			$(this).attr('title', '');
-		})
-	}
-
 	pfb_remove_label();
 
 	// Greyout 'Disabled' Action fields
-	$("select[id^='action']").click(function() {
-		if ($(this).val() == 'Disabled') {
-			$(this).css('background-color', 'lightgrey');
-		} else {
-			$(this).css('background-color', '');
-		}
-	});
-	$("select[id^='action']").each(function() {
-		if ($(this).val() == 'Disabled') {
-			$(this).css('background-color', 'lightgrey');
-		}
-	});
+	pfb_greyout("select[id^='action']");
 
 	// Greyout 'Disabled' State fields
 	pfb_chg_state_bkgd();
@@ -188,10 +277,9 @@ events.push(function() {
 
 	if (pagetype == 'dnsbl') {
 
+		// issue #1209: gutter renumbering lives in category_edit.php's own
+		// events.push wiring now (index-recomputed, padding-correct on add/delete).
 		$('#addrow').click(function() {
-			$('.repeatable:last').find('sub').each(function() {
-				$(this).append('&nbsp; ').text(Number($(this).text()) + 1 );
-			});
 			pfb_remove_label();
 		})
 	}
@@ -201,10 +289,6 @@ events.push(function() {
 			pfb_autocomplete();
 			$('#addrow').click(function() {
 				pfb_autocomplete();
-
-				$('.repeatable:last').find('sub').each(function() {
-					$(this).append('&nbsp; ').text(Number($(this).text()) + 1 );
-				});
 				pfb_remove_label();
 			})
 		}

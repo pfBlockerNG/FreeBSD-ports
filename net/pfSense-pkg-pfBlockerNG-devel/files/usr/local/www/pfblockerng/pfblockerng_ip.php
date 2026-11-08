@@ -27,32 +27,70 @@ require_once('/usr/local/pkg/pfblockerng/pfblockerng.inc');
 global $pfb;
 pfb_global();
 
-$pfb['iconfig'] = config_get_path('installedpackages/pfblockerngipsettings/config/0', []);
+$pfb['iconfig'] = PfbConfig::readSection('installedpackages/pfblockerngipsettings/config/0');
+
+// issue #1875 step 2b: gate the CM6 live-highlight overlay for v4suppression/v6suppression,
+// same $pfb_syntaxhl_on idiom pfblockerng_dnsbl.php establishes at its line 38.
+$pfb_syntaxhl_on = pfb_editor_enabled();
+
+$pfb_ip_editor = pfb_ip_editor_render($pfb_syntaxhl_on);
 
 $pconfig = array();
-$pconfig['enable_dup']		= $pfb['iconfig']['enable_dup']				?: '';
-$pconfig['enable_agg']		= $pfb['iconfig']['enable_agg']				?: '';
+// issue #2123: the seven checkbox defaults below are owned by the registry (ADR-29),
+// not restated here; PfbConfig::read() applies each one when the key is absent and
+// returns the PfbToggle the render compares. A validation-error redisplay replaces
+// $pconfig with raw $_POST (see below), so the renders still run the value through
+// the toggle read adapter -- that call is the POST-redisplay adapter, not a second
+// declaration of the default.
+$pconfig['enable_dup']		= PfbConfig::read('ip/enable_dup');
+$pconfig['enable_agg']		= PfbConfig::read('ip/enable_agg');
 
-// Default to 'on' for new installation only
-$pconfig['suppression']		= isset($pfb['iconfig']['suppression'])			? $pfb['iconfig']['suppression'] : 'on';
+// ADR-11: opt-in per-type aggregate ("Uber") aliases. CSV scalar, gateway-registered
+// (general section); presented here beside CIDR Aggregation. Default none -> [''] selects
+// nothing in the multi-select. Options defined here (before the POST handler) so the
+// save-time sanitiser and the rendered select share one source of allowed values.
+// Stored VALUES are Deny/Permit/Match/Native; Native's label keeps "Alias Native".
+$options_pfb_agg_types		= [ 'Deny' => 'Deny', 'Permit' => 'Permit', 'Match' => 'Match', 'Native' => 'Alias Native' ];
+$pconfig['pfb_agg_types']	= explode(',', (string) PfbConfig::read('gen/pfb_agg_types'));
 
-$pconfig['enable_log']		= $pfb['iconfig']['enable_log']				?: '';
-$pconfig['ip_placeholder']	= $pfb['iconfig']['ip_placeholder']			?: '127.1.7.7';
-$pconfig['maxmind_locale']	= $pfb['iconfig']['maxmind_locale']			?: 'en';
-$pconfig['asn_reporting']	= $pfb['iconfig']['asn_reporting']			?: 'disabled';
-$pconfig['asn_token']		= $pfb['iconfig']['asn_token']				?: '';
-$pconfig['database_cc']		= $pfb['iconfig']['database_cc']			?: '';
-$pconfig['maxmind_account']	= $pfb['iconfig']['maxmind_account']			?: '';
-$pconfig['maxmind_key']		= $pfb['iconfig']['maxmind_key']			?: '';
-$pconfig['inbound_interface']	= explode(',', $pfb['iconfig']['inbound_interface'])	?: array();
-$pconfig['inbound_deny_action']	= $pfb['iconfig']['inbound_deny_action']		?: 'block';
-$pconfig['outbound_interface']	= explode(',', $pfb['iconfig']['outbound_interface'])	?: array();
-$pconfig['outbound_deny_action']= $pfb['iconfig']['outbound_deny_action']		?: 'reject';
-$pconfig['enable_float']	= $pfb['iconfig']['enable_float']			?: '';
-$pconfig['pass_order']		= $pfb['iconfig']['pass_order']				?: 'order_0';
-$pconfig['autorule_suffix']	= $pfb['iconfig']['autorule_suffix']			?: 'autorule';
-$pconfig['killstates']		= $pfb['iconfig']['killstates']				?: '';
-$pconfig['v4suppression']	= base64_decode($pfb['iconfig']['v4suppression'])	?: '';
+// ADR-40: alias-table apply mode (gateway-registered, general section).
+$options_pfb_alias_delta_mode	= [ 'auto' => 'Auto (recommended)', 'delta' => 'Always incremental', 'replace' => 'Always full replace' ];
+$pconfig['pfb_alias_delta_mode']	= (string) PfbConfig::read('gen/pfb_alias_delta_mode')->toStored();
+$pconfig['pfb_alias_delta_batch']	= pfb_alias_delta_batch_clamp((string) PfbConfig::read('gen/pfb_alias_delta_batch'));
+
+// Default 'on' owned by the registry (ADR-29, issue #1907); PfbConfig::read applies it
+// when absent.
+$pconfig['suppression']		= PfbConfig::read('ip/suppression');
+// issue #3413: global Suppression CIDR Limit, absent -> Disabled by the registry default.
+$pconfig['suppression_cidr']	= PfbConfig::read('ip/suppression_cidr');
+$pconfig['suppression_cidr_v6']	= PfbConfig::read('ip/suppression_cidr_v6');
+
+$pconfig['enable_log']		= PfbConfig::read('ip/enable_log');
+$pconfig['enable_rdns']		= PfbConfig::read('ip/enable_rdns');
+$pconfig['ip_placeholder']	= PfbConfig::read('ip/ip_placeholder');
+$pconfig['maxmind_locale']	= PfbConfig::read('ip/maxmind_locale');
+$pconfig['asn_reporting']	= PfbConfig::read('ip/asn_reporting');
+// issue #2922: asn_token is masked/write-only; never load the stored token into the form.
+$pconfig['asn_token']		= $_POST['asn_token'] ?? '';
+$pconfig['database_cc']		= PfbConfig::read('ip/database_cc');
+$pconfig['maxmind_account']	= PfbConfig::read('ip/maxmind_account');
+// issue #924: maxmind_key is masked/write-only -- never populate it from the stored value.
+// A GET renders blank; a validation-error redisplay preserves the just-typed $_POST value
+// (like every other field), never PfbConfig/iconfig.
+$pconfig['maxmind_key']		= $_POST['maxmind_key'] ?? '';
+$pconfig['inbound_interface']	= pfb_csv_list(PfbConfig::read('ip/inbound_interface'));
+$pconfig['inbound_deny_action']	= PfbConfig::read('ip/inbound_deny_action');
+$pconfig['outbound_interface']	= pfb_csv_list(PfbConfig::read('ip/outbound_interface'));
+$pconfig['outbound_deny_action']= PfbConfig::read('ip/outbound_deny_action');
+$pconfig['enable_float']	= PfbConfig::read('ip/enable_float');
+$pconfig['fw_self_outbound']	= PfbConfig::read('ip/fw_self_outbound');
+$pconfig['pass_order']		= PfbConfig::read('ip/pass_order');
+$pconfig['autorule_suffix']	= PfbConfig::read('ip/autorule_suffix');
+$pconfig['killstates']		= PfbConfig::read('ip/killstates');
+$pconfig['v4suppression']	= pfb_b64_text(PfbConfig::read('ip/v4suppression'));
+// v6suppression may remain absent until the first post-upgrade save; the registered
+// empty default reaches the same decoder fallback as the former guarded section read.
+$pconfig['v6suppression']	= pfb_b64_text(PfbConfig::read('ip/v6suppression'));
 
 // Select array options
 $options_asn_reporting 		= [	'disabled'	=> 'Disabled',
@@ -76,16 +114,45 @@ $options_pass_order		= [	'order_0' => '| pfB_Pass/Match/Block/Reject | All other
 					'order_4' => '| pfB_Pass/Match | pfB_Block/Reject | pfSense Block/Reject | pfSense Pass/Match |' ];
 
 $options_autorule_suffix = [ 'autorule' => 'auto rule', 'standard' => 'Null (no suffix)', 'ar' => 'AR' ];
+$options_suppression_cidr	= [ 'Disabled' => 'Disabled' ] + array_combine(range(1, 17, 1), range(1, 17, 1));
+$options_suppression_cidr_v6	= [ 'Disabled' => 'Disabled' ] + array_combine(range(1, 64, 1), range(1, 64, 1));
+
+// $input_errors is read unconditionally in the render section below, so it must be
+// defined on every request path (incl. a POST without 'save'). Initialise it once.
+$input_errors = array();
 
 // Validate input fields and save
 if ($_POST) {
 	if (isset($_POST['save'])) {
 
-		if (isset($input_errors)) {
-			unset($input_errors);
+		unset($savemsg);
+
+		// issue #1777: reject an array-valued field ('asn_token[]=x') before any
+		// string sink below Array-to-string-converts on it -- same idea as
+		// pfblockerng_category_edit.php (issue #1106), but NOT the same guard
+		// shape: unlike category_edit, this page has genuine multi-select fields
+		// -- pfSense's Form_Select(..., TRUE) appends '[]' to the POST name, so a
+		// real browser legitimately posts those as arrays and a guard over every
+		// $_POST key would reject and blank them on every save. Excluding the
+		// multi-selects (a small, stable set this page owns) rather than listing
+		// the scalar fields keeps every present and future scalar field covered:
+		// beyond the #1723 sanitize loops below, pfb_alias_delta_mode reaches
+		// array_key_exists(), which is a fatal TypeError on an array, and
+		// pfb_alias_delta_batch reaches a (string) cast.
+		$pfb_multiselect_fields = array('inbound_interface', 'outbound_interface', 'pfb_agg_types');
+		foreach (array_keys($_POST) as $pfb_post_field) {
+			if (!is_scalar($_POST[$pfb_post_field]) && !in_array($pfb_post_field, $pfb_multiselect_fields, TRUE)) {
+				$input_errors[] = gettext('Invalid value submitted for field:') . ' ' . htmlspecialchars($pfb_post_field);
+				$_POST[$pfb_post_field] = '';
+			}
 		}
-		if (isset($savemsg)) {
-			unset($savemsg);
+
+		// issue #1723: sanitize at ingestion -- first step, before any evaluation.
+		foreach (array('ip_placeholder', 'asn_token', 'autorule_suffix', 'maxmind_account', 'maxmind_key') as $pfb_text_field) {
+			$_POST[$pfb_text_field] = pfb_sanitize_text((string) ($_POST[$pfb_text_field] ?? ''));
+		}
+		foreach (array('v4suppression', 'v6suppression') as $pfb_text_area_field) {
+			$_POST[$pfb_text_area_field] = pfb_sanitize_text_area((string) ($_POST[$pfb_text_area_field] ?? ''));
 		}
 
 		// Validate Select field options
@@ -94,7 +161,9 @@ if ($_POST) {
 						'inbound_deny_action'	=> 'block',
 						'outbound_deny_action'	=> 'reject',
 						'pass_order'		=> 'order_0', 
-						'autorule_suffix'	=> 'autorule'
+						'autorule_suffix'	=> 'autorule',
+						'suppression_cidr'	=> 'Disabled',
+						'suppression_cidr_v6'	=> 'Disabled'
 						);
 
 		foreach ($select_options as $s_option => $s_default) {
@@ -111,7 +180,7 @@ if ($_POST) {
 			$input_errors[] = 'Placeholder IP: A valid IPv4 address must be specified.';
 		}
 		else {
-			$ip_validate = where_is_ipaddr_configured($_POST['ip_placeholder'], '' , true, true, '');
+			$ip_validate = where_is_ipaddr_configured($_POST['ip_placeholder'], '' , TRUE, TRUE, '');
 			if (count($ip_validate)) {
 				$input_errors[] = 'Placeholder IP: Address must be in an isolated Range that is not used in your Network.';
 			}
@@ -121,33 +190,50 @@ if ($_POST) {
 			$input_errors[] = 'MaxMind Account Invalid';
 		}
 
-		if (!empty($_POST['maxmind_key']) && empty(pfb_filter($_POST['maxmind_key'], PFB_FILTER_WORD, 'ip'))) {
+		// issue #924: maxmind_key is masked/write-only -- a blank POST keeps the stored key, so
+		// validate only a non-empty submission. Reference 'maxmind_key' suppresses pfb_filter()'s
+		// failed-validation log line so the secret never reaches a log, even when rejected.
+		// issue #1723: already sanitized by the ingestion prologue above -- plain read.
+		$pfb_maxmind_key_post = (string) ($_POST['maxmind_key'] ?? '');
+		if ($pfb_maxmind_key_post !== '' && empty(pfb_filter($pfb_maxmind_key_post, PFB_FILTER_WORD, 'maxmind_key'))) {
 			$input_errors[] = 'MaxMind License key Invalid';
 		}
 
-		if (!empty($_POST['asn_token']) && empty(pfb_filter($_POST['asn_token'], PFB_FILTER_WORD, 'ip'))) {
+		$pfb_asn_token_post = (string) ($_POST['asn_token'] ?? '');
+		if ($pfb_asn_token_post !== '' && empty(pfb_filter($pfb_asn_token_post, PFB_FILTER_WORD, 'asn_token'))) {
 			$input_errors[] = 'IPinfo Token Invalid';
 		}
 
-		$v4suppression = explode("\r\n", $_POST['v4suppression']);
+		// issue #1723: the ingestion prologue already normalized CRLF/CR to LF, so
+		// per-line validation now splits on "\n" (the pre-#1723 "\r\n" split matched
+		// a browser's raw CRLF submission; that separator no longer survives ingestion).
+		$v4suppression = explode("\n", $_POST['v4suppression']);
 		if (!empty($v4suppression)) {
 			foreach ($v4suppression as $line) {
-
-				if (substr($line, 0, 1) == '#' || empty($line)) {
-					continue;
-				}
-
-				$host = array_map('trim', preg_split('/(?=#)/', $line));
-				$mask = strstr($host[0], '/', FALSE);
-
-				if ($mask != '/32' && $mask != '/24') {
-					$input_errors[] = "IPv4 Suppression: Invalid mask [ {$host[0]} ]. Mask must be defined as /32 or /24 only.";
-				}
-
-				if (!is_subnetv4($host[0])) {
-					$input_errors[] = "IPv4 Suppression: Invalid IPv4 subnet address defined [ {$host[0]} ]";
+				$suppression_error = pfb_validate_suppression_line($line, 'ipv4');
+				if ($suppression_error !== NULL) {
+					$input_errors[] = $suppression_error;
 				}
 			}
+		}
+
+		// ADR-53: v6 sibling of the v4 validation above. explode() always returns a
+		// non-empty array, so (unlike the v4 block above) this skips the vestigial
+		// !empty() wrapper -- avoids replicating the pre-existing PHPStan
+		// empty.variable finding baselined for v4suppression at the same call shape.
+		foreach (explode("\n", $_POST['v6suppression']) as $line) {
+			$suppression_error = pfb_validate_suppression_line($line, 'ipv6');
+			if ($suppression_error !== NULL) {
+				$input_errors[] = $suppression_error;
+			}
+		}
+
+		// issue #3382: the firewall-traffic rules are applied on the Inbound interfaces. Validated
+		// before the MaxMind block below, which starts a background conversion when no error is set.
+		$pfb_fw_self_post = pfb_filter($_POST['fw_self_outbound'] ?? '', PFB_FILTER_ON_OFF, 'ip') ?: '';
+		if (pfb_cfg_toggle_read($pfb_fw_self_post) === PfbToggle::On &&
+		    !array_intersect((array)($_POST['inbound_interface'] ?? array()), array_keys($options_inbound_interface))) {
+			$input_errors[] = 'Apply outbound rules to firewall traffic requires at least one Inbound interface.';
 		}
 
 		// Apply MaxMind locale changes if required
@@ -181,29 +267,67 @@ if ($_POST) {
 
 		if (!$input_errors) {
 
-			$pfb['iconfig']['enable_dup']		= pfb_filter($_POST['enable_dup'], PFB_FILTER_ON_OFF, 'ip')	?: '';
-			$pfb['iconfig']['enable_agg']		= pfb_filter($_POST['enable_agg'], PFB_FILTER_ON_OFF, 'ip')	?: '';
-			$pfb['iconfig']['suppression']		= pfb_filter($_POST['suppression'], PFB_FILTER_ON_OFF, 'ip')	?: '';
-			$pfb['iconfig']['enable_log']		= pfb_filter($_POST['enable_log'], PFB_FILTER_ON_OFF, 'ip')	?: '';
+			// issue #1907/#2123: an unchecked checkbox is absent from $_POST, and the
+			// owner-ruled empty token is what PFB_FILTER_ON_OFF already emits for it;
+			// writeSection() then normalises every registered key below through its
+			// registered adapter.
+			$pfb['iconfig']['enable_dup']		= pfb_filter($_POST['enable_dup'] ?? '', PFB_FILTER_ON_OFF, 'ip') ?: '';
+			$pfb['iconfig']['enable_agg']		= pfb_filter($_POST['enable_agg'] ?? '', PFB_FILTER_ON_OFF, 'ip') ?: '';
+			$pfb['iconfig']['suppression']		= pfb_filter($_POST['suppression'] ?? '', PFB_FILTER_ON_OFF, 'ip') ?: '';
+			$pfb['iconfig']['suppression_cidr']	= $_POST['suppression_cidr']					?: 'Disabled';
+			$pfb['iconfig']['suppression_cidr_v6']	= $_POST['suppression_cidr_v6']					?: 'Disabled';
+			$pfb['iconfig']['enable_log']		= pfb_filter($_POST['enable_log'] ?? '', PFB_FILTER_ON_OFF, 'ip') ?: '';
+			$pfb['iconfig']['enable_rdns']		= pfb_filter($_POST['enable_rdns'] ?? '', PFB_FILTER_ON_OFF, 'ip') ?: '';
 			$pfb['iconfig']['ip_placeholder']	= $_POST['ip_placeholder']					?: '127.1.7.7';
 			$pfb['iconfig']['maxmind_locale']	= $_POST['maxmind_locale']					?: 'en';
-			$pfb['iconfig']['database_cc']		= pfb_filter($_POST['database_cc'], PFB_FILTER_ON_OFF, 'ip')	?: '';
+			$pfb['iconfig']['database_cc']		= pfb_filter($_POST['database_cc'] ?? '', PFB_FILTER_ON_OFF, 'ip') ?: '';
 			$pfb['iconfig']['maxmind_account']	= pfb_filter($_POST['maxmind_account'], PFB_FILTER_WORD, 'ip')	?: '';
-			$pfb['iconfig']['maxmind_key']		= pfb_filter($_POST['maxmind_key'], PFB_FILTER_WORD, 'ip')	?: '';
+			// issue #924: blank keeps the existing stored key -- only overwrite on a non-empty
+			// submission, never clear it via a blank re-post ($pfb['iconfig']['maxmind_key']
+			// already holds the current stored value from the readSection() above).
+			if ($pfb_maxmind_key_post !== '') {
+				$pfb['iconfig']['maxmind_key'] = pfb_filter($pfb_maxmind_key_post, PFB_FILTER_WORD, 'maxmind_key') ?: '';
+			}
 			$pfb['iconfig']['asn_reporting']	= $_POST['asn_reporting']					?: 'disabled';
-			$pfb['iconfig']['asn_token']		= $_POST['asn_token']					?: '';
+			if ($pfb_asn_token_post !== '') {
+				$pfb['iconfig']['asn_token'] = $pfb_asn_token_post;
+			}
 			$pfb['iconfig']['inbound_interface']	= implode(',', (array)$_POST['inbound_interface'])		?: '';
 			$pfb['iconfig']['inbound_deny_action']	= $_POST['inbound_deny_action']					?: '';
 			$pfb['iconfig']['outbound_interface']	= implode(',', (array)$_POST['outbound_interface'])		?: '';
 			$pfb['iconfig']['outbound_deny_action']	= $_POST['outbound_deny_action']				?: '';
-			$pfb['iconfig']['enable_float']		= pfb_filter($_POST['enable_float'], PFB_FILTER_ON_OFF, 'ip')	?: '';
+			$pfb['iconfig']['enable_float']		= pfb_filter($_POST['enable_float'] ?? '', PFB_FILTER_ON_OFF, 'ip') ?: '';
+			$pfb['iconfig']['fw_self_outbound']	= $pfb_fw_self_post;
 			$pfb['iconfig']['pass_order']		= $_POST['pass_order']						?: 'order_0';
 			$pfb['iconfig']['autorule_suffix']	= $_POST['autorule_suffix']					?: 'autorule';
-			$pfb['iconfig']['killstates']		= pfb_filter($_POST['killstates'], PFB_FILTER_ON_OFF, 'ip')	?: '';
-			$pfb['iconfig']['v4suppression']	= base64_encode($_POST['v4suppression'])			?: '';
+			$pfb['iconfig']['killstates']		= pfb_filter($_POST['killstates'] ?? '', PFB_FILTER_ON_OFF, 'ip') ?: '';
+			// issue #1723: already sanitized by the ingestion prologue -- plain encode.
+			$pfb['iconfig']['v4suppression']	= base64_encode($_POST['v4suppression'] ?? '');
+			$pfb['iconfig']['v6suppression']	= base64_encode($_POST['v6suppression'] ?? '');
 
-			config_set_path('installedpackages/pfblockerngipsettings/config/0', $pfb['iconfig']);
+			// ADR-11: per-type aggregate aliases multi-select -> CSV scalar (sanitised to the
+			// known option keys; default none). Gateway-registered in the general section, so
+			// written via PfbConfig::write (not the IP section blob). array_keys() keeps the
+			// allowed set in lockstep with $options_pfb_agg_types (defined above).
+			$agg_types_post	= array_values(array_intersect(
+						array_keys($options_pfb_agg_types),
+						(array) ($_POST['pfb_agg_types'] ?? array())));
+			PfbConfig::write('gen/pfb_agg_types', implode(',', $agg_types_post));
+
+			// ADR-40: alias-table apply mode (gateway-registered scalar).
+			$delta_mode_post = array_key_exists($_POST['pfb_alias_delta_mode'] ?? '', $options_pfb_alias_delta_mode)
+				? $_POST['pfb_alias_delta_mode']
+				: 'auto';
+			PfbConfig::write('gen/pfb_alias_delta_mode', $delta_mode_post);
+
+			// ADR-40: batch size — clamp to [64, 4096].  An empty field (user
+			// cleared the value) must default to 512, not cast to 0 and clamp to 64.
+			$_pfb_batch_raw = trim((string) ($_POST['pfb_alias_delta_batch'] ?? ''));
+			PfbConfig::write('gen/pfb_alias_delta_batch', (string) pfb_alias_delta_batch_resolve($_pfb_batch_raw));
+
+			PfbConfig::writeSection('installedpackages/pfblockerngipsettings/config/0', $pfb['iconfig']);
 			write_config('[pfBlockerNG] save IP settings');
+			pfb_mark_pending_changes();	// applies on the next Update, not on save
 			if (!empty($savemsg)) {
 				header("Location: /pfblockerng/pfblockerng_ip.php?savemsg={$savemsg}");
 			} else {
@@ -213,15 +337,16 @@ if ($_POST) {
 		}
 		else {
 			$pconfig = $_POST;
+			// A browser posts no key at all when nothing is selected.
+			$pconfig['inbound_interface']	= (array)($_POST['inbound_interface'] ?? array());
+			$pconfig['outbound_interface']	= (array)($_POST['outbound_interface'] ?? array());
 		}
 	}
-}
-else {
-	$input_errors = '';
 }
 
 $pgtitle = array(gettext('Firewall'), gettext('pfBlockerNG'), gettext('IP'));
 $pglinks = array('', '/pfblockerng/pfblockerng_ip.php', '@self');
+$shortcut_section = 'pfblockerng';
 include_once('head.inc');
 
 if ($input_errors) {
@@ -232,22 +357,24 @@ if ($input_errors) {
 $get_req = pfb_alerts_default_page();
 
 $tab_array	= array();
-$tab_array[]	= array(gettext('General'),	false,	'/pfblockerng/pfblockerng_general.php');
-$tab_array[]	= array(gettext('IP'),		true,	'/pfblockerng/pfblockerng_ip.php');
-$tab_array[]	= array(gettext('DNSBL'),	false,	'/pfblockerng/pfblockerng_dnsbl.php');
-$tab_array[]	= array(gettext('Update'),	false,	'/pfblockerng/pfblockerng_update.php');
-$tab_array[]	= array(gettext('Reports'),	false,	"/pfblockerng/pfblockerng_alerts.php{$get_req}");
-$tab_array[]	= array(gettext('Feeds'),	false,	'/pfblockerng/pfblockerng_feeds.php');
-$tab_array[]	= array(gettext('Logs'),	false,	'/pfblockerng/pfblockerng_log.php');
-$tab_array[]	= array(gettext('Sync'),	false,	'/pfblockerng/pfblockerng_sync.php');
-display_top_tabs($tab_array, true);
+$tab_array[]	= array(gettext('General'),	FALSE,	'/pfblockerng/pfblockerng_general.php');
+$tab_array[]	= array(gettext('IP'),		TRUE,	'/pfblockerng/pfblockerng_ip.php');
+$tab_array[]	= array(gettext('DNS'),		FALSE,	'/pfblockerng/pfblockerng_dns_general.php');
+$tab_array[]	= array(gettext('Update'),	FALSE,	'/pfblockerng/pfblockerng_update.php');
+$tab_array[]	= array(gettext('Reports'),	FALSE,	"/pfblockerng/pfblockerng_alerts.php{$get_req}");
+$tab_array[]	= array(gettext('Feeds'),	FALSE,	'/pfblockerng/pfblockerng_feeds.php');
+$tab_array[]	= array(gettext('Logs'),	FALSE,	'/pfblockerng/pfblockerng_log.php');
+$tab_array[]	= array(gettext('Sync'),	FALSE,	'/pfblockerng/pfblockerng_sync.php');
+pfb_software_add_tab($tab_array);
+display_top_tabs($tab_array, TRUE);
 
 $tab_array	= array();
-$tab_array[]	= array(gettext('IPv4'),	false,	'/pfblockerng/pfblockerng_category.php?type=ipv4');
-$tab_array[]	= array(gettext('IPv6'),	false,	'/pfblockerng/pfblockerng_category.php?type=ipv6');
-$tab_array[]	= array(gettext('GeoIP'),	false,	'/pfblockerng/pfblockerng_category.php?type=geoip');
-$tab_array[]	= array(gettext('Reputation'),	false,	'/pfblockerng/pfblockerng_reputation.php');
-display_top_tabs($tab_array, true);
+$tab_array[]	= array(gettext('IPv4'),	FALSE,	'/pfblockerng/pfblockerng_category.php?type=ipv4');
+$tab_array[]	= array(gettext('IPv6'),	FALSE,	'/pfblockerng/pfblockerng_category.php?type=ipv6');
+$tab_array[]	= array(gettext('GeoIP'),	FALSE,	'/pfblockerng/pfblockerng_category.php?type=geoip');
+$tab_array[]	= array(gettext('Reputation'),	FALSE,	'/pfblockerng/pfblockerng_reputation.php');
+display_top_tabs($tab_array, TRUE);
+pfb_print_pending_changes_box();
 
 if (!$input_errors && isset($_REQUEST['savemsg'])) {
 	$savemsg = htmlspecialchars($_REQUEST['savemsg']);
@@ -260,180 +387,96 @@ $section = new Form_Section('IP Configuration');
 $section->addInput(new Form_StaticText(
 	'Links',
 	'<small>'
-	. '<a href="/firewall_aliases.php" target="_blank">Firewall Aliases</a>&emsp;'
-	. '<a href="/firewall_rules.php" target="_blank">Firewall Rules</a>&emsp;'
-	. '<a href="/status_logs_filter.php" target="_blank">Firewall Logs</a></small>'
+	. '<a href="/firewall_aliases.php" target="_blank" rel="noopener noreferrer">Firewall Aliases</a>&emsp;'
+	. '<a href="/firewall_rules.php" target="_blank" rel="noopener noreferrer">Firewall Rules</a>&emsp;'
+	. '<a href="/status_logs_filter.php" target="_blank" rel="noopener noreferrer">Firewall Logs</a></small>'
 ));
 
 $section->addInput(new Form_Checkbox(
 	'enable_dup',
 	'De-Duplication',
 	'Enable',
-	$pconfig['enable_dup'] === 'on' ? true:false,
+	pfb_cfg_toggle_read($pconfig['enable_dup'] ?? NULL) === PfbToggle::On,
 	'on'
-))->setHelp('Only used for IPv4 Deny Lists');
+))->setHelp('Default: <strong>Off</strong><br />'
+		. 'Remove duplicate addresses across Deny lists so the same host is listed only once. '
+		. 'Applies to IPv4 and IPv6 Deny lists.');
 
 $section->addInput(new Form_Checkbox(
 	'enable_agg',
 	'CIDR Aggregation',
 	'Enable',
-	$pconfig['enable_agg'] === 'on' ? true:false,
+	pfb_cfg_toggle_read($pconfig['enable_agg'] ?? NULL) === PfbToggle::On,
 	'on'
-))->setHelp('Optimise CIDRs - merge contiguous CIDRs into larger CIDR blocks.');
+))->setHelp('Default: <strong>Off</strong><br />'
+		. 'Merge contiguous IPv4 CIDRs into larger blocks. IPv6 entries are not CIDR-aggregated.');
 
 $section->addInput(new Form_Checkbox(
 	'suppression',
 	'Suppression',
 	'Enable',
-	$pconfig['suppression'] === 'on' ? true:false,
+	pfb_ip_suppression_enabled($pconfig['suppression'] ?? NULL),
 	'on'
-))->setHelp('Default enabled. This will prevent Selected IPs (and RFC1918/Loopback addresses) from being blocked. Only for IPv4 lists (/32 and /24).'
+))->setHelp('Default: <strong>Enabled</strong><br />Prevent selected IPs and private/reserved addresses from being blocked. Applies to IPv4 entries from <code>/8</code> through <code>/32</code> and IPv6 entries from <code>/32</code> through <code>/128</code>. '
+	. pfb_list_section_help_note(['IPv4 Suppression', 'IPv6 Suppression'], FALSE)
 	. '<div class="infoblock">'
-	. 'GeoIP blocklist cannot be suppressed.<br /><br />'
-	. 'Alerts can be suppressed using the \'+\' icon in the Alerts tab and IPs are added to the IPv4 suppression custom list.<br />'
-	. 'For GeoIP/Blocked IPs in a CIDR other than /32 or /24, will need a \'Whitelist alias\' w/ a List Action: \'Permit Outbound\' Firewall rule.<br />'
-	. 'Only \'Deny\' type Aliases can be suppressed!'
+	. '<p>Use the <strong>+</strong> icon on <strong>Reports</strong> &gt; <strong>Alerts</strong> to suppress a single host, even inside a large feed range. The IP is added to the matching family\'s suppression custom list.</p>'
+	. '<p>GeoIP blocks cannot be suppressed; for those, create a list with <strong>List Action</strong> set to <strong>Permit Outbound</strong> and add the addresses to allow.</p>'
+	. '<p>Only Deny-type aliases can be suppressed.</p>'
 	. '</div>'
 );
+
+$group = new Form_Group('Suppression CIDR Limit');
+$group->add(new Form_Select(
+	'suppression_cidr',
+	'IPv4',
+	$pconfig['suppression_cidr'],
+	$options_suppression_cidr
+))->setHelp('Default: <strong>8</strong> on a new install, <strong>Disabled</strong> after an upgrade<br />'
+	. 'Reduces an IPv4 range broader than this limit to a single address, for the DNSBL IPs alias (pfB_DNSBLIP_v4) and every IPv4 list without its own '
+	. '<strong>Suppression CIDR Limit</strong> (<strong>Advanced Settings</strong>). Applies only when <strong>Suppression</strong> is enabled. Not applied to GeoIP feeds.')
+  ->setAttribute('style', 'width: auto');
+
+$group->add(new Form_Select(
+	'suppression_cidr_v6',
+	'IPv6',
+	$pconfig['suppression_cidr_v6'],
+	$options_suppression_cidr_v6
+))->setHelp('Default: <strong>32</strong> on a new install, <strong>Disabled</strong> after an upgrade<br />'
+	. 'Reduces an IPv6 range broader than this limit to a single address, for the DNSBL IPs alias (pfB_DNSBLIP_v6) and every IPv6 list. '
+	. 'Applies only when <strong>Suppression</strong> is enabled. Not applied to GeoIP feeds.')
+  ->setAttribute('style', 'width: auto');
+$section->add($group);
 
 $section->addInput(new Form_Checkbox(
 	'enable_log',
 	'Force Global IP Logging',
 	'Enable',
-	$pconfig['enable_log'] === 'on' ? true:false,
+	pfb_cfg_toggle_read($pconfig['enable_log'] ?? NULL) === PfbToggle::On,
 	'on'
-))->setHelp('The global logging option is only used to force logging for all IP Aliases, and not to disable the logging of all IP Aliases.<br />'
-		. 'This overrides any logging settings in the GeoIP/IPv4/v6 tabs.'
+))->setHelp('Default: <strong>Off</strong><br />'
+		. 'Forces logging on for every IP alias, overriding the per-alias <strong>Enable Logging</strong> settings on <strong>GeoIP</strong>, <strong>IPv4</strong> and <strong>IPv6</strong>. '
+		. 'It cannot turn logging off.'
 );
-
-$section->addInput(new Form_Input(
-	'ip_placeholder',
-	gettext('Placeholder IP Address'),
-	'text',
-	$pconfig['ip_placeholder'],
-	[ 'placeholder' => '127.1.7.7' ]
-))->setHelp('Enter a single IPv4 placeholder address<br />'
-	. 'For IPv6 \'::\' will be prefixed to the placeholder IP.<br />'
-	. 'This address should be in an Isolated Range that is not used in your Network.<br />'
-	. 'This IP address will be used as a placeholder IP to avoid empty Feeds/Aliases.'
-);
-
-$form->add($section);
-$section = new Form_Section('ASN configuration');
-
-$section->addInput(new Form_StaticText(
-	'Attribution',
-	'<small>'
-	. 'ASN database distributed under the Creative Commons Attribution-ShareAlike 4.0 International License by: '
-	. '<a target="_blank" href="https://ipinfo.io">IPinfo</a><br />'
-	. 'The ASN database is automatically updated each day at a random hour.</small>'
-));
-
-
-$section->addInput(new Form_Select(
-	'asn_reporting',
-	'ASN Reporting',
-	$pconfig['asn_reporting'],
-	$options_asn_reporting
-))->setHelp('Query for the ASN (IPinfo downloaded ASN database) for each block/reject/permit/match IP entry. ASN values are cached as per the defined selection.')
-  ->setAttribute('style', 'width: auto');
-
-$section->addInput(new Form_Input(
-        'asn_token',
-        gettext('ASN IPinfo Token'),
-        'text',
-        $pconfig['asn_token'],
-        ['placeholder' => 'Enter your IPinfo Token']
-))->setHelp('To utilize the free IPinfo ASN functionality, you must first register for a free IPinfo user account. Visit the following '
-        . '<a href="https://ipinfo.io/signup" target="_blank">Link to Register</a> for a free IPinfo user account. '
-        . '<strong>NOTE: If you use Snort/Suricata, check for IPinfo blocked events!</strong>')
-  ->setAttribute('autocomplete', 'off');
-
-$form->add($section);
-$section = new Form_Section('MaxMind GeoIP configuration');
-
-$section->addInput(new Form_StaticText(
-        'Attribution',
-        '<small>'
-        . 'GeoIP database GeoLite2 distributed under the Creative Commons Attribution-ShareAlike 4.0 International License by: '
-	. '<a target="_blank" href="https://www.maxmind.com">MaxMind Inc.</a><br />'
-	. 'The GeoIP database is automatically updated each day at a random hour.</small>'
-));
-
-$section->addInput(new Form_Input(
-	'maxmind_account',
-	gettext('MaxMind Account ID'),
-	'text',
-	$pconfig['maxmind_account'],
-	['placeholder' => 'Enter your MaxMind GeoLite2 Account ID']
-))->setHelp('To utilize the free MaxMind GeoLite2 GeoIP functionality, you must first register for a free MaxMind user account. Visit the following '
-	. '<a href="https://www.maxmind.com/en/geolite2/signup" target="_blank">Link to Register</a> for a free MaxMind user account. '
-	. '<strong>Use the GeoIP Update version 3.1.1 or newer registration option.</strong>')
-  ->setAttribute('autocomplete', 'off');
-
-$section->addInput(new Form_Input(
-	'maxmind_key',
-	gettext('MaxMind License Key'),
-	'text',
-	$pconfig['maxmind_key'],
-	['placeholder' => 'Enter your MaxMind GeoLite2 License Key']
-))->setHelp('To utilize the free MaxMind GeoLite2 GeoIP functionality, you must first register for a free MaxMind user account. Visit the following '
-	. '<a href="https://www.maxmind.com/en/geolite2/signup" target="_blank">Link to Register</a> for a free MaxMind user account. '
-	. '<strong>Utilize the GeoIP Update version 3.1.1 or newer registration option.</strong>')
-  ->setAttribute('autocomplete', 'off');
-
-$section->addInput(new Form_Select(
-	'maxmind_locale',
-	'MaxMind Localized Language',
-	$pconfig['maxmind_locale'],
-	$options_maxmind_locale
-))->setHelp('Select the localized name data from the Language options available.<br />'
-		. 'Changes to the Locale will be executed in the background, and will take a few minutes to complete.<br />'
-		. 'Upon completion, a pfSense Notice will be generated.')
-  ->setAttribute('style', 'width: auto');
 
 $section->addInput(new Form_Checkbox(
-	'database_cc',
-	'MaxMind CSV Updates',
-	'Check to disable MaxMind CSV updates',
-	$pconfig['database_cc'] === 'on' ? true:false,
+	'enable_rdns',
+	'Reverse DNS Lookups',
+	'Enable',
+	pfb_cfg_toggle_read($pconfig['enable_rdns'] ?? NULL) === PfbToggle::On,
 	'on'
-))->setHelp('This will disable the MaxMind monthly CSV GeoIP database cron update. This does not affect the MaxMind binary cron update that is used for other GeoIP funcionality in the package.');
+))->setHelp('Default: <strong>Off</strong><br />'
+		. 'Perform a reverse DNS (PTR) lookup to resolve the hostname of each blocked IP address shown in the Alerts and logs.<br />'
+		. 'Enabling this increases the number of DNS queries performed, though the impact is usually negligible.');
 
-// Create page anchor for IP Suppression List
-$section->addInput(new Form_StaticText(
-	NULL,
-	'<div id="Suppression"></div>'));
-
-$form->add($section);
-
-// Print Custom List TextArea section
-$section = new Form_Section('IPv4 Suppression', 'IPv4_Suppression_customlist', COLLAPSIBLE|SEC_CLOSED);
-$suppression_text = '<strong><u>This suppression list is for [ /32 or /24 ] IPv4 addresses only!</u></strong><br /><br />
-
-			When \'Suppression\' is enabled, all RFC1918 and loopback addresses are also filtered on feed download|Update|Reload.<br /><br />
-
-			Enter one &emsp; <strong>IPv4 address</strong>&emsp; per line<br />
-			You may use "<strong>#</strong>" after any address to add comments. &emsp;IE: (x.x.x.x/32 # example.com)<br /><br />
-
-			To utilize this <strong>Suppression List</strong>, enable <strong>Suppression</strong> and click on the "+"
-			icon(s) in the Alerts tab to add the IPv4 addresses automatically to this Suppression list and immeditely
-			remove the IPv4 address from the Deny aliastable.<br /><br />
-
-			Note: When manually adding an IPv4 address <strong>[ /32 or /24 only! ]</strong> to this Suppression List,
-			you must run a <strong>"Force Reload - IP"</strong> for the changes to take effect.';
-
-$section->addInput(new Form_Textarea(
-	'v4suppression',
-	'',
-	$pconfig['v4suppression']
-))->removeClass('form-control')
-  ->addClass('row-fluid col-sm-12')
-  ->setAttribute('columns', '90')
-  ->setAttribute('rows', '15')
-  ->setAttribute('wrap', 'off')
-  ->setAttribute('style', 'background:#fafafa; width: 100%')
-  ->setHelp($suppression_text);
+$section->addInput(new Form_Checkbox(
+	'killstates',
+	'Kill States',
+	'Enable',
+	pfb_cfg_toggle_read($pconfig['killstates'] ?? NULL) === PfbToggle::On,
+	'on'
+))->setHelp('Default: <strong>Off</strong><br />'
+		. 'After each update, clear firewall states for addresses that are now blocked. Not done on an update that also reloads the firewall rules (for example when an alias or auto rule is added); those states stay until they expire.');
 
 $form->add($section);
 
@@ -454,7 +497,7 @@ $group->add(new Form_Select(
 	'Rule Action',
 	$pconfig['inbound_deny_action'],
 	$options_inbound_deny_action
-))->setHelp('Default: <strong>Block</strong><br />Select \'Rule action\' for Inbound rules:')
+))->setHelp('Default: <strong>Block</strong><br />Select <strong>Rule Action</strong> for inbound rules:')
   ->setAttribute('style', 'width: auto');
 $section->add($group);
 
@@ -465,7 +508,8 @@ $group->add(new Form_Select(
 	$pconfig['outbound_interface'],
 	$options_outbound_interface,
 	TRUE
-))->setHelp('Select the Outbound interface(s) you want to apply auto rules to:')
+))->setHelp('Select the Outbound interface(s) you want to apply auto rules to:<br />'
+		. 'Outbound rules apply to traffic entering the selected interfaces, so select the client-facing (e.g. LAN) interfaces.')
   ->setAttribute('size', $options_interface_cnt);
 
 $group->add(new Form_Select(
@@ -473,7 +517,7 @@ $group->add(new Form_Select(
 	'Rule Action',
 	$pconfig['outbound_deny_action'],
 	$options_outbound_deny_action
-))->setHelp('Default: <strong>Reject</strong><br />Select \'Rule action\' for Outbound rules:')
+))->setHelp('Default: <strong>Reject</strong><br />Select <strong>Rule Action</strong> for outbound rules:')
   ->setAttribute('style', 'width: auto');
 $section->add($group);
 
@@ -481,10 +525,27 @@ $section->addInput(new Form_Checkbox(
 	'enable_float',
 	'Floating Rules',
 	'Enable',
-	$pconfig['enable_float'] === 'on' ? true:false,
+	pfb_cfg_toggle_read($pconfig['enable_float'] ?? NULL) === PfbToggle::On,
 	'on'
-))->setHelp('<strong>Enabled:</strong> Auto-rules will be generated in the \'Floating Rules\' tab.<br />'
+))->setHelp('Default: <strong>Off</strong><br />'
+		. '<strong>Enabled:</strong> Auto-rules will be generated in the \'Floating Rules\' tab.<br />'
 		. '<strong>Disabled:</strong> Auto-rules will be generated in the selected Inbound/Outbound interfaces.'
+);
+
+$section->addInput(new Form_Checkbox(
+	'fw_self_outbound',
+	'Apply outbound rules to firewall traffic',
+	'Enable',
+	pfb_cfg_toggle_read($pconfig['fw_self_outbound'] ?? NULL) === PfbToggle::On,
+	'on'
+))->setHelp('<p>Default: <strong>Off</strong>.</p>'
+		. '<p>Apply outbound automatic rules to firewall-originated traffic as well.</p>'
+		. '<p><span class="text-danger"><strong>Warning:</strong></span> These rules can block the firewall\'s own updates, feed downloads, NTP, DNS upstreams and VPN connections. A large GeoIP outbound list can cut the firewall off from the Internet.</p>'
+		. '<p>The additional floating rule uses direction <code>out</code> on the interfaces selected under <strong>Inbound Firewall Rules</strong>, matching the firewall\'s source address:</p>'
+		. '<ul>'
+		. '<li>With IPv4 NAT, translated clients can also match the firewall address and are logged with that address. Clients on selected <strong>Outbound Firewall Rules</strong> interfaces are already blocked on ingress; this can newly affect clients on interfaces not selected there.</li>'
+		. '<li>With IPv6 and no NAT, only firewall-originated traffic matches.</li>'
+		. '</ul>'
 );
 
 $section->addInput(new Form_Select(
@@ -492,44 +553,237 @@ $section->addInput(new Form_Select(
 	'Firewall \'Auto\' Rule Order',
 	$pconfig['pass_order'],
 	$options_pass_order
-))->setHelp('Default Order:<strong> | pfB_Block/Reject | All other Rules | (original format)</strong><br />'
-		. '<span class="text-danger"><strong>Note: \'Auto type\' Firewall Rules will be \'ordered\' by this selection.</strong></span>'
+))->setHelp('Default Order:<strong>| pfB_Pass/Match/Block/Reject | All other Rules | (Default format)</strong><br />'
+		. '<p><span class="text-danger"><strong>Warning:</strong></span> This selection can reorder all firewall rules, not just pfBlockerNG rules.</p>'
 		. '<div class="infoblock">'
-		. 'Refer to the blue infoblock \'List Action\' icon in the IPv4 tab for details on how to use \'Alias type\'<br />'
-		. '(ie: \'Alias Deny\') instead of \'Auto generated rules\', if required for your network design.<br /><br />'
-		. 'Select the \'<strong>Order</strong>\' of the Rules<br /><br />'
-		. '&emsp;Selecting \'original format\', sets pfBlockerNG rules at the top of the Firewall TAB.<br />'
-		. '&emsp;Selecting any other \'Order\' will re-order <strong>all the rules to the format indicated!</strong></div>')
-  ->setAttribute('style', 'width: auto');
+		. '<p>See <strong>List Action</strong> on <strong>IPv4</strong> for alias-only actions such as <strong>Alias Deny</strong>, if you need to manage your own firewall rules.</p>'
+		. '<p>The default format places pfBlockerNG rules at the top. Any other selection reorders all rules to the displayed format.</p></div>')
+  ->setAttribute('style', 'width: auto; max-width: 100%');
 
 $section->addInput(new Form_Select(
 	'autorule_suffix',
 	'Firewall \'Auto\' Rule Suffix',
 	$pconfig['autorule_suffix'],
 	$options_autorule_suffix
-))->setHelp('Default: <strong>auto rule</strong><br />Select \'Auto Rule\' description suffix for auto defined rules. pfBlockerNG must be disabled to modify suffix.')
+))->setHelp('Default: <strong>auto rule</strong><br />Select the description suffix for automatic rules. Turn off <strong>pfBlockerNG</strong> on <strong>General</strong> before changing the suffix.')
   ->setAttribute('style', 'width: auto');
-
-$section->addInput(new Form_Checkbox(
-	'killstates',
-	'Kill States',
-	'Enable',
-	$pconfig['killstates'] === 'on' ? true:false,
-	'on'
-))->setHelp('When \'Enabled\', after a cron event or any \'Force\' commands, any blocked IPs found in the Firewall states will be cleared.');
 
 $form->add($section);
 
+$section = new Form_Section('ASN configuration');
+$section->addInput(new Form_StaticText(
+	'Attribution',
+	'<small>'
+	. 'ASN database distributed under the Creative Commons Attribution-ShareAlike 4.0 International License by: '
+	. '<a target="_blank" rel="noopener noreferrer" href="https://ipinfo.io">IPinfo</a><br />'
+	. 'Checked daily at <strong>Default Schedule</strong> on <strong>General</strong>.</small>'
+));
+
+
+$section->addInput(new Form_Select(
+	'asn_reporting',
+	'ASN Reporting',
+	$pconfig['asn_reporting'],
+	$options_asn_reporting
+))->setHelp('Default: <strong>Disabled</strong><br />Query for the ASN (IPinfo downloaded ASN database) for each block/reject/permit/match IP entry. ASN values are cached as per the defined selection.')
+  ->setAttribute('style', 'width: auto');
+
+$section->addInput(new Form_Input(
+	'asn_token',
+	gettext('ASN IPinfo Token'),
+	'password',
+	$pconfig['asn_token'] ?? '',
+	['placeholder' => 'Enter your IPinfo Token -- leave blank to keep the current token']
+))->setHelp('To utilize the free IPinfo ASN functionality, you must first register for a free IPinfo user account. Visit the following '
+	. '<a href="https://ipinfo.io/signup" target="_blank" rel="noopener noreferrer">Link to Register</a> for a free IPinfo user account. '
+	. '<p><strong>Note:</strong> If you use Snort/Suricata, check for IPinfo blocked events.</p>'
+	. '<p>The stored token is never displayed here; leaving this field blank when saving keeps the existing token unchanged.</p>')
+  ->setAttribute('autocomplete', 'off');
+
+$form->add($section);
+$section = new Form_Section('MaxMind GeoIP configuration');
+
+$section->addInput(new Form_StaticText(
+        'Attribution',
+        '<small>'
+        . 'GeoIP database GeoLite2 distributed under the Creative Commons Attribution-ShareAlike 4.0 International License by: '
+	. '<a target="_blank" rel="noopener noreferrer" href="https://www.maxmind.com">MaxMind Inc.</a><br />'
+	. 'Checked daily at <strong>Default Schedule</strong> on <strong>General</strong>.</small>'
+));
+
+$section->addInput(new Form_Input(
+	'maxmind_account',
+	gettext('MaxMind Account ID'),
+	'text',
+	$pconfig['maxmind_account'],
+	['placeholder' => 'Enter your MaxMind GeoLite2 Account ID']
+))->setHelp('To utilize the free MaxMind GeoLite2 GeoIP functionality, you must first register for a free MaxMind user account. Visit the following '
+	. '<a href="https://www.maxmind.com/en/geolite2/signup" target="_blank" rel="noopener noreferrer">Link to Register</a> for a free MaxMind user account. '
+	. 'Use the GeoIP Update version 3.1.1 or newer registration option.')
+  ->setAttribute('autocomplete', 'off');
+
+$section->addInput(new Form_Input(
+	'maxmind_key',
+	gettext('MaxMind License Key'),
+	'password',
+	$pconfig['maxmind_key'] ?? '',
+	['placeholder' => 'Enter your MaxMind GeoLite2 License Key -- leave blank to keep the current key']
+))->setHelp('To utilize the free MaxMind GeoLite2 GeoIP functionality, you must first register for a free MaxMind user account. Visit the following '
+	. '<a href="https://www.maxmind.com/en/geolite2/signup" target="_blank" rel="noopener noreferrer">Link to Register</a> for a free MaxMind user account. '
+	. 'Use the GeoIP Update version 3.1.1 or newer registration option. '
+	. 'The stored key is never displayed here; leaving this field blank when saving keeps the existing key unchanged.')
+  ->setAttribute('autocomplete', 'off');
+
+$section->addInput(new Form_Select(
+	'maxmind_locale',
+	'MaxMind Localized Language',
+	$pconfig['maxmind_locale'],
+	$options_maxmind_locale
+))->setHelp('Default: <strong>English</strong><br />Select the localized name data from the Language options available.<br />'
+		. 'Changes to the Locale will be executed in the background, and will take a few minutes to complete.<br />'
+		. 'Upon completion, a pfSense Notice will be generated.')
+  ->setAttribute('style', 'width: auto');
+
+$section->addInput(new Form_Checkbox(
+	'database_cc',
+	'MaxMind CSV Updates',
+	'Check to disable MaxMind CSV updates',
+	pfb_cfg_toggle_read($pconfig['database_cc'] ?? NULL) === PfbToggle::On,
+	'on'
+))->setHelp('Default: <strong>Off</strong> (CSV updates run).<br />Stop the daily MaxMind CSV download. The MaxMind binary database (used by <strong>Reports</strong> and GeoIP lookups) still updates.');
+
+$form->add($section);
+
+$pfb_ip_anchor_layout = pfb_ip_anchor_layout_render();
+$section = new Form_Section('IPv4 Suppression', $pfb_ip_anchor_layout['suppression'], COLLAPSIBLE|SEC_CLOSED);
+$suppression_text = '<p>Applies to IPv4 entries from <code>/8</code> through <code>/32</code>.</p>
+			<p>When <strong>Suppression</strong> is enabled, RFC1918, loopback and reserved (documentation, multicast, CGN, benchmarking, 6to4)
+			addresses are also filtered on feed download, update or reload.</p>
+			<p>Enter one IPv4 address per line. Use <code>#</code> after an address to add a comment, for example <code>203.0.113.7/32 # example.com</code>.</p>
+			<p>Enable <strong>Suppression</strong> and use the <strong>+</strong> icon on <strong>Reports</strong> &gt; <strong>Alerts</strong>
+			to add IPv4 addresses automatically to <strong>IPv4 Suppression</strong> and immediately remove them from the Deny alias table.</p>
+			<p>After manually adding addresses, open <strong>Update</strong>, set <strong>Run Scope</strong> to <strong>IP</strong> and
+			<strong>Force</strong> to <strong>Parse</strong>, then use <strong>Run Now</strong>.</p>';
+
+$section->addInput(new Form_Textarea(
+	'v4suppression',
+	'',
+	$pconfig['v4suppression']
+))->removeClass('form-control')
+  ->addClass('row-fluid col-sm-12')
+  ->setAttribute('columns', '90')
+  ->setAttribute('rows', '15')
+  ->setAttribute('wrap', 'off')
+  ->setAttribute('style', 'width: 100%')
+  ->setHelp($suppression_text);
+
+$form->add($section);
+
+$section = new Form_Section('IPv6 Suppression', 'IPv6_Suppression_customlist', COLLAPSIBLE|SEC_CLOSED);
+$suppression_text_v6 = '<p>Applies to IPv6 entries from <code>/32</code> through <code>/128</code>.</p>
+			<p>When <strong>Suppression</strong> is enabled, ULA (<code>fc00::/7</code>), link-local, loopback and reserved (documentation, multicast, NAT64)
+			addresses are also filtered on feed download, update or reload.</p>
+			<p>Enter one IPv6 address per line. Use <code>#</code> after an address to add a comment, for example <code>2001:db8::1/128 # example.com</code>.</p>
+			<p>Enable <strong>Suppression</strong> and use the <strong>+</strong> icon on <strong>Reports</strong> &gt; <strong>Alerts</strong>
+			to add IPv6 addresses automatically to <strong>IPv6 Suppression</strong> and immediately remove them from the Deny alias table.</p>
+			<p>After manually adding addresses, open <strong>Update</strong>, set <strong>Run Scope</strong> to <strong>IP</strong> and
+			<strong>Force</strong> to <strong>Parse</strong>, then use <strong>Run Now</strong>.</p>';
+
+$section->addInput(new Form_Textarea(
+	'v6suppression',
+	'',
+	$pconfig['v6suppression']
+))->removeClass('form-control')
+  ->addClass('row-fluid col-sm-12')
+  ->setAttribute('columns', '90')
+  ->setAttribute('rows', '15')
+  ->setAttribute('wrap', 'off')
+  ->setAttribute('style', 'width: 100%')
+  ->setHelp($suppression_text_v6);
+
+$form->add($section);
+
+$section = new Form_Section('Advanced Settings', 'ip_advanced', COLLAPSIBLE|SEC_CLOSED);
+
+$section->addInput(new Form_Select(
+	'pfb_agg_types',
+	'Aggregated Aliases',
+	$pconfig['pfb_agg_types'],
+	$options_pfb_agg_types,
+	TRUE
+))->setHelp('Build a combined <code>pfB_&lt;Type&gt;_Aggregated_v4/_v6</code> alias for each selected type.'
+		. '<div class="infoblock"><ul>'
+		. '<li>Each alias contains the union of feeds with the matching <strong>List Action</strong> type.</li>'
+		. '<li><strong>Deny</strong> includes <strong>Deny Inbound</strong>, <strong>Deny Outbound</strong>, <strong>Deny Both</strong> and <strong>Alias Deny</strong>.</li>'
+		. '<li>IPv4 members may be CIDR-aggregated. IPv6 aliases are deduplicated unions, not CIDR-collapsed.</li>'
+		. '<li>No firewall rules are created. Use the aliases in your own rules or integrations such as HAProxy.</li>'
+		. '</ul><p>Each aggregate loads an additional firewall table; enable only the types you need.</p>'
+		. '<p>Default: <strong>none</strong></p></div>')
+  ->setAttribute('size', count($options_pfb_agg_types))
+  ->setAttribute('style', 'width: auto');
+
+$section->addInput(new Form_Select(
+	'pfb_alias_delta_mode',
+	'Alias Table Apply Mode',
+	$pconfig['pfb_alias_delta_mode'],
+	$options_pfb_alias_delta_mode
+))->setHelp('<p>Default: <strong>Auto (recommended)</strong>.</p>'
+		. '<ul>'
+		. '<li><strong>Auto (recommended)</strong>: apply small changes incrementally. Replace the table when changes reach <strong>5%</strong>, on first load or at boot.</li>'
+		. '<li><strong>Always incremental</strong>: apply additions and removals without the percentage-based fallback.</li>'
+		. '<li><strong>Always full replace</strong>: replace the entire table.</li>'
+		. '</ul>')
+  ->setAttribute('id', 'pfb_alias_delta_mode')
+  ->setAttribute('style', 'width: auto');
+
+$section->addInput(new Form_Input(
+	'pfb_alias_delta_batch',
+	'Alias Table Incremental Batch Size',
+	'number',
+	$pconfig['pfb_alias_delta_batch'],
+	[ 'min' => '64', 'max' => '4096', 'placeholder' => '512' ]
+))->setHelp('Default: 512 (range 64–4096). '
+		. 'Number of entries applied per update step in <strong>Auto (recommended)</strong> and <strong>Always incremental</strong> modes. '
+		. 'Use 512 for typical tables; 1024+ for tables with 1M+ entries.');
+
+$section->addInput(new Form_Input(
+	'ip_placeholder',
+	gettext('Placeholder IP Address'),
+	'text',
+	$pconfig['ip_placeholder'],
+	[ 'placeholder' => '127.1.7.7' ]
+))->setHelp('Default: <strong>127.1.7.7</strong><br />Enter a single IPv4 placeholder address<br />'
+	. 'For IPv6 \'::\' will be prefixed to the placeholder IP.<br />'
+	. 'This address should be in an Isolated Range that is not used in your Network.<br />'
+	. 'This IP address will be used as a placeholder IP to avoid empty Feeds/Aliases.'
+);
+
+$form->add($section);
+
+print_callout('<p>Saved changes are applied automatically at a schedule check, normally within 15 minutes while pfBlockerNG is enabled. If an <strong>Automatic Apply Window</strong> is set on <strong>General</strong>, changes wait for that window. To apply them now, open <strong>Update</strong> and use <strong>Run Now</strong>.</p>');
 print ($form);
-print_callout('<strong>Setting changes are applied via CRON or \'Force Update|Reload\' only!</strong>');
 
 ?>
+<?=$pfb_ip_editor['asset']?>
 <script type="text/javascript">
 //<![CDATA[
 
 var pagetype = null;
 
+function enable_delta_batch() {
+	hideInput('pfb_alias_delta_batch', $('#pfb_alias_delta_mode').val() == 'replace');
+}
+
+events.push(function(){
+<?=$pfb_ip_editor['lists']?>
+
+	$('#pfb_alias_delta_mode').change(function() {
+		enable_delta_batch();
+	});
+	enable_delta_batch();
+});
+
 //]]>
 </script>
-<script src="pfBlockerNG.js" type="text/javascript"></script>
+<?=pfb_ip_js_asset_render()?>
 <?php include('foot.inc');?>

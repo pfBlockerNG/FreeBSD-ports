@@ -111,6 +111,14 @@
 					"header":	"Pulsedive"
 				},
 				{
+					"feed":		"Q-Feeds",
+					"website":	"https://qfeeds.com/",
+					"url":		"https://api.qfeeds.com/api?feed_type=malware_ip&api_token=_API_KEY_",
+					"register":	"https://tip.qfeeds.com/",
+					"info":		"API token required (free Community license available). Community data refreshes daily: set 'Update Frequency' to 'Once a day'. Plus refreshes every 4 hours, Premium every 20 minutes.",
+					"header":	"QFeeds_Malware_IP"
+				},
+				{
 					"feed":		"Spamhaus",
 					"website":	"https://www.spamhaus.org/blocklists/do-not-route-or-peer/",
 					"contact":	"https://contact-center.spamhaus.org/",
@@ -143,6 +151,7 @@
 			"cron":		"01hour",
 			"feeds": [
 				{
+					"status":	"discontinued",
 					"feed":		"Alienvault",
 					"website":	"https://www.alienvault.com/",
 					"contact":	"https://www.alienvault.com/support",
@@ -368,9 +377,11 @@
 					"header":	"CoinBlocker"
 				},
 				{
+					"status":	"discontinued",
 					"feed":		"Cyber Crime WHQ",
 					"website":	"https://cybercrime-tracker.net/about.php",
-					"url":		"https://cybercrime-tracker.net/fuckerz.php",
+					"url":		"https://cybercrime-tracker.net/csv.php",
+					"info":		"Discontinued: the provider changed its access rules and format; this feed is not currently supported.",
 					"header":	"CCT_IP"
 				},
 				{
@@ -519,7 +530,7 @@
 		},
 		"SCANNERS": {
 			"info":		"These are feeds that scan the Internet for exposed services",
-			"description":	"Scanners - Searching for exposted services",
+			"description":	"Scanners - Searching for exposed services",
 			"action":	"block",
 			"cron":		"EveryDay",
 			"feeds": [
@@ -556,7 +567,7 @@
 				{
 					"feed":		"Maltrail",
 					"website":	"https://github.com/stamparm/maltrail",
-					"url":		"https://raw.githubusercontent.com/stamparm/maltrail/master/trails/static/mass_scanner.txt",
+					"url":		"https://raw.githubusercontent.com/stamparm/maltrail/refs/heads/master/data/mass_scanner.txt",
 					"header":	"Maltrail_Scanners_All"
 				}
 			]
@@ -719,7 +730,7 @@
 			]
 		},
 		"Internic_4": {
-			"info":		"Internic is a list of the 13 IPv4 Root DNS servers via Internic Domain Registration service.-LB-Typically used for a Permit Outbound usage.-LB-The frequency of updates is set to once per week.",
+			"info":		"Internic is a list of the 13 IPv4 Root DNS servers via Internic Domain Registration service.-LB-Typically used with 'Permit Outbound'.-LB-The frequency of updates is set to once per week.",
 			"description":	"Internic - List of the 13 IPv4 Root DNS servers via Internic Domain Registration service.",
 			"action":	"permit",
 			"cron":		"Weekly",
@@ -875,7 +886,7 @@
 			]
 		},
 		"AWS_4": {
-			"info":		"IP ranges for Amazon AWS. Use the IPv4 Advanced Tunable to configure a Pre-Script to collect the AWS Region IPs",
+			"info":		"IP ranges for Amazon AWS. Use the 'Advanced Settings' section of 'IPv4' to select a 'Pre-process Script' that collects the AWS Region IPs",
 			"description":	"IP ranges for Amazon AWS.",
 			"action":	"permit",
 			"cron":		"Weekly",
@@ -907,6 +918,14 @@
 							"header":	"Myip_BL6_ALL"
 							}
 						]
+				},
+				{
+					"feed":		"Q-Feeds",
+					"website":	"https://qfeeds.com/",
+					"url":		"https://api.qfeeds.com/api?feed_type=malware_ip&api_token=_API_KEY_",
+					"register":	"https://tip.qfeeds.com/",
+					"info":		"API token required (free Community license available). Community data refreshes daily: set 'Update Frequency' to 'Once a day'. Plus refreshes every 4 hours, Premium every 20 minutes.",
+					"header":	"QFeeds_Malware_IP6"
 				},
 				{
 					"feed":		"Spamhaus",
@@ -995,7 +1014,7 @@
 			]
 		},
 		"Internic_6": {
-			"info":		"Internic is a list of the 13 IPv6 Root DNS servers via Internic Domain Registration service.-LB-Typically used for a Permit Outbound usage.-LB-The frequency of updates is set to once per week.",
+			"info":		"Internic is a list of the 13 IPv6 Root DNS servers via Internic Domain Registration service.-LB-Typically used with 'Permit Outbound'.-LB-The frequency of updates is set to once per week.",
 			"description":	"Internic - List of the 13 IPv6 Root DNS servers via Internic Domain Registration service.",
 			"action":	"permit",
 			"cron":		"Weekly",
@@ -1024,7 +1043,7 @@
 			]
 		},
 		"AWS_6": {
-			"info":		"IP ranges for Amazon AWS. Use the IPv6 Advanced Tunable to configure a Pre-Script to collect the AWS Region IPs",
+			"info":		"IP ranges for Amazon AWS. Use the 'Advanced Settings' section of 'IPv6' to select a 'Pre-process Script' that collects the AWS Region IPs",
 			"description":	"IP ranges for Amazon AWS.",
 			"action":	"permit",
 			"cron":		"Weekly",
@@ -1052,11 +1071,111 @@
 					"header":	"CC6"
 				}
 			]
+		},
+		"BlockListDE_6": {
+			"info":		"BlockList.DE is a fail2ban reporting service.-LB-The 'PRI3 Alias' contains a single URL for all BlockList.DE feeds.-LB-This BlockListDE_6 Alias can be utilized to enable specific BlockList.DE IPv6 Feeds, as desired.-LB-The frequency of updates is set to once per hour.",
+			"description":	"Collection of specific fail2ban reporting service IPv6 Feeds.",
+			"action":	"block",
+			"cron":		"01hour",
+			"feeds": [
+				{
+					"feed":		"BlockList DE",
+					"website":	"https://www.blocklist.de/",
+					"contact":	"https://www.blocklist.de/en/contact.html",
+					"url":		"https://lists.blocklist.de/lists/apache.txt",
+					"delist":	"https://www.blocklist.de/en/delist.html?ip=",
+					"header":	"BlockListDE_Apache6"
+				},
+				{
+					"feed":		"BlockList DE",
+					"website":	"https://www.blocklist.de/",
+					"url":		"https://www.blocklist.de/lists/asterisk.txt",
+					"header":	"BlockListDE_Asterisk6"
+				},
+				{
+					"feed":		"BlockList DE",
+					"website":	"https://www.blocklist.de/",
+					"url":		"https://lists.blocklist.de/lists/bots.txt",
+					"header":	"BlockListDE_Bots6"
+				},
+				{
+					"feed":		"BlockList DE",
+					"website":	"https://www.blocklist.de/",
+					"url":		"https://lists.blocklist.de/lists/bruteforcelogin.txt",
+					"header":	"BlockListDE_Brute6"
+				},
+				{
+					"feed":		"BlockList DE",
+					"website":	"https://www.blocklist.de/",
+					"url":		"https://www.blocklist.de/lists/email.txt",
+					"header":	"BlockListDE_Email6"
+				},
+				{
+					"feed":		"BlockList DE",
+					"website":	"https://www.blocklist.de/",
+					"url":		"https://lists.blocklist.de/lists/ftp.txt",
+					"header":	"BlockListDE_FTP6"
+				},
+				{
+					"feed":		"BlockList DE",
+					"website":	"https://www.blocklist.de/",
+					"url":		"https://www.blocklist.de/lists/proftpd.txt",
+					"header":	"BlockListDE_FTPD6"
+				},
+				{
+					"feed":		"BlockList DE",
+					"website":	"https://www.blocklist.de/",
+					"url":		"https://www.blocklist.de/lists/ircbot.txt",
+					"header":	"BlockListDE_IRC6"
+				},
+				{
+					"feed":		"BlockList DE",
+					"website":	"https://www.blocklist.de/",
+					"url":		"https://lists.blocklist.de/lists/imap.txt",
+					"header":	"BlockListDE_IMAP6"
+				},
+				{
+					"feed":		"BlockList DE",
+					"website":	"https://www.blocklist.de/",
+					"url":		"https://lists.blocklist.de/lists/mail.txt",
+					"header":	"BlockListDE_Mail6"
+				},
+				{
+					"feed":		"BlockList DE",
+					"website":	"https://www.blocklist.de/",
+					"url":		"https://www.blocklist.de/lists/pop3.txt",
+					"header":	"BlockListDE_POP36"
+				},
+				{
+					"feed":		"BlockList DE",
+					"website":	"https://www.blocklist.de/",
+					"url":		"https://www.blocklist.de/lists/postfix.txt",
+					"header":	"BlockListDE_Postfix6"
+				},
+				{
+					"feed":		"BlockList DE",
+					"website":	"https://www.blocklist.de/",
+					"url":		"https://lists.blocklist.de/lists/sip.txt",
+					"header":	"BlockListDE_SIP6"
+				},
+				{
+					"feed":		"BlockList DE",
+					"website":	"https://www.blocklist.de/",
+					"url":		"https://lists.blocklist.de/lists/ssh.txt",
+					"header":	"BlockListDE_SSH6"
+				},
+				{
+					"feed":		"BlockList DE",
+					"website":	"https://www.blocklist.de/",
+					"url":		"https://lists.blocklist.de/lists/strongips.txt",
+					"header":	"BlockListDE_Strong6"
+				}
+			]
 		}
 	},
 	"dnsbl": {
 		"EasyList": {
-			"info":		"EasyList are Feeds originaly designed for filering on browser based extensions. The DNSBL parser will only utilize those domains which are listed to be blocked in full",
+			"info":		"EasyList are Feeds originally designed for filtering on browser based extensions. The DNSBL parser will only utilize those domains which are listed to be blocked in full",
 			"description":	"EasyList Feeds - Utilizing only the domains which are listed to be blocked in full.",
 			"action":	"block",
 			"cron":		"EveryDay",
@@ -1234,6 +1353,12 @@
 					"header":	"Adaway"
 				},
 				{
+					"feed":		"AdGuard DNS filter",
+					"website":	"https://github.com/AdguardTeam/AdGuardSDNSFilter",
+					"url":		"https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt",
+					"header":	"AdGuard_DNS_Filter"
+				},
+				{
 					"feed":		"Disconnect.Me",
 					"website":	"https://disconnect.me/disconnect",
 					"url":		"https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt",
@@ -1330,7 +1455,7 @@
 				{
 					"feed":		"Maltrail",
 					"website":	"https://github.com/stamparm/maltrail",
-					"url":		"https://raw.githubusercontent.com/stamparm/aux/master/maltrail-malware-domains.txt",
+					"url":		"https://github.com/stamparm/trails/releases/latest/download/maltrail-malware-domains.txt",
 					"header":	"Maltrail_BD"
 				},
 				{
@@ -1361,6 +1486,14 @@
 					"header":	"MVPS"
 				},
 				{
+					"feed":		"Q-Feeds",
+					"website":	"https://qfeeds.com/",
+					"url":		"https://api.qfeeds.com/api?feed_type=malware_domains&api_token=_API_KEY_",
+					"register":	"https://tip.qfeeds.com/",
+					"info":		"API token required (free Community license available). Community data refreshes daily: set 'Update Frequency' to 'Once a day'. Plus refreshes every 4 hours, Premium every 20 minutes.",
+					"header":	"QFeeds_Malware_Domains"
+				},
+				{
 					"feed":		"Spam404",
 					"website":	"http://www.spam404.com/blog/category/Blacklist",
 					"url":		"https://raw.githubusercontent.com/Dawsey21/Lists/master/main-blacklist.txt",
@@ -1389,7 +1522,7 @@
 			]
 		},
 		"Phishing": {
-			"info":		"Phishing group is a collection of Phishing Domain Feeds.-LB-These phising domains are based on full URLs, so there may be some False Positives.-LB-Its recommended to use the TOP1M whitelist.-LB-The frequency of updates is set to once per day.",
+			"info":		"Phishing group is a collection of Phishing Domain Feeds.-LB-These phishing domains are based on full URLs, so there may be some False Positives.-LB-It's recommended to use the 'TOP1M Whitelist'.-LB-The frequency of updates is set to once per day.",
 			"description":	"Phishing - Collection of Phishing Domain Feeds.",
 			"action":	"block",
 			"cron":		"EveryDay",
@@ -1677,6 +1810,7 @@
 					"header":	"Krisk_Intel_BD"
 				},
 				{
+					"status":	"discontinued",
 					"feed":		"Malc0de",
 					"website":	"https://malc0de.com",
 					"url":		"https://malc0de.com/bl/BOOT",
@@ -1816,7 +1950,7 @@
 					"feed":		"Monero Miner",
 					"website":	"https://laskowski-tech.com/2017/12/15/crypto-miners-on-webservers-part-2/",
 					"url":		"https://raw.githubusercontent.com/Hestat/minerchk/master/hostslist.txt",
-					"info":		"This feed is also contained in the CoinbBlocker Feed",
+					"info":		"This feed is also contained in the CoinBlocker feed",
 					"header":	"MoneroMiner"
 				},
 				{
@@ -1856,8 +1990,8 @@
 			]
 		},
 		"Firebog_Suspicious": {
-			"info":		"Something's fishy here.",
-			"description":	"Something's fishy here.",
+			"info":		"Suspicious domains",
+			"description":	"Suspicious domains",
 			"action":	"block",
 			"cron":		"EveryDay",
 			"feeds": [
@@ -1913,8 +2047,8 @@
 			]
 		},
 		"Firebog_Advertising": {
-			"info":		"Waste of bandwith trying to sell stuff.",
-			"description":	"Waste of bandwith trying to sell stuff.",
+			"info":		"Advertising domains",
+			"description":	"Advertising domains",
 			"action":	"block",
 			"cron":		"EveryDay",
 			"feeds": [
@@ -1972,8 +2106,8 @@
 			]
 		},
 		"Firebog_Trackers": {
-			"info":		"Places that track you.",
-			"description":	"Places that track you.",
+			"info":		"Tracking domains",
+			"description":	"Tracking domains",
 			"action":	"block",
 			"cron":		"EveryDay",
 			"feeds": [
@@ -2042,8 +2176,8 @@
 			]
 		},
 		"Firebog_Malicious": {
-			"info":		"Bad places.",
-			"description":	"Bad places.",
+			"info":		"Malicious domains",
+			"description":	"Malicious domains",
 			"action":	"block",
 			"cron":		"EveryDay",
 			"feeds": [
@@ -2121,8 +2255,8 @@
 			]
 		},
 		"Firebog_Other": {
-			"info":		"Other random lists.",
-			"description":	"Other random lists.",
+			"info":		"Other lists: cryptocurrency mining, adult content and social-network domains",
+			"description":	"Other lists: cryptocurrency mining, adult content and social-network domains",
 			"action":	"block",
 			"cron":		"EveryDay",
 			"feeds": [

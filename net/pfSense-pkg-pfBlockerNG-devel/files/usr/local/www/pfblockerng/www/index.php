@@ -34,24 +34,33 @@ if (strlen($_SERVER['REQUEST_TIME']) != 10 || !preg_match("/^[0-9]+$/", $_SERVER
 $ptype = array();
 $ptype['REQUEST_URI'] = htmlspecialchars(str_replace('|', '--', $_SERVER['REQUEST_URI']));
 foreach (array('HTTP_HOST', 'HTTP_REFERER', 'HTTP_USER_AGENT', 'REMOTE_ADDR') as $server_type) {
-	$ptype[$server_type] = htmlspecialchars($_SERVER[$server_type]) ?: 'Unknown';
+	// issue #1792: exact-'' compare, not ?: -- a literal `Host: 0` header is
+	// data, not an absence (this page is standalone under the sinkhole
+	// lighttpd; no pfblockerng.inc helpers here).
+	$ptype[$server_type] = ($server_value = htmlspecialchars($_SERVER[$server_type] ?? '')) === '' ? 'Unknown' : $server_value;
 }
 
 $ptype['type'] = $ptype['group'] = $ptype['evald'] = $ptype['feed'] = '-';
+// issue #1496: the included dnsbl_default.php template interpolates $ts
+// unconditionally; the file_exists() block below is the only assigner, so a
+// fresh install (no log yet) hit this undefined on every DNSBL block-page.
+$ts = '';
 if (file_exists('/var/log/pfblockerng/dnsbl.log')) {
 	for ($i=0; $i <= 5; $i++) {
 
 		// Search for blocked domain within last minutes
-		$timestamp = date('M j H:i', htmlspecialchars($_SERVER['REQUEST_TIME']));
-		if (!preg_match("/^[a-zA-Z0-9: ]+$/", $timestamp)) {
+		// dnsbl.log timestamps are ISO (Y-m-d H:i:s); the guard charset below
+		// must include '-' or every $ts here fails preg_match and aborts render.
+		$timestamp = date('Y-m-d H:i', htmlspecialchars($_SERVER['REQUEST_TIME']));
+		if (!preg_match("/^[a-zA-Z0-9:\- ]+$/", $timestamp)) {
 			exit;
 		}
 
 		foreach (array( $timestamp,
-				date('M j H:i', strtotime('-1 minute', strtotime($timestamp))),
-				date('M j', strtotime($timestamp))) as $ts) {
+				date('Y-m-d H:i', strtotime('-1 minute', strtotime($timestamp))),
+				date('Y-m-d', strtotime($timestamp))) as $ts) {
 
-			if (!preg_match("/^[a-zA-Z0-9: ]+$/", $ts)) {
+			if (!preg_match("/^[a-zA-Z0-9:\- ]+$/", $ts)) {
 				exit;
 			}
 
@@ -59,7 +68,10 @@ if (file_exists('/var/log/pfblockerng/dnsbl.log')) {
 			$now = escapeshellarg($ts);
 			$domain = escapeshellarg(',' . $ptype['HTTP_HOST'] . ',');
 
-			exec("/usr/bin/tail -n50 /var/log/pfblockerng/dnsbl.log | /usr/bin/grep {$domain} | /usr/bin/grep {$now} | /usr/bin/tail -1", $data, $retval);
+			// issue #1652: -F -- the host is data, not a pattern; as a BRE its
+			// '.' wildcard-matched any char and could select a DIFFERENT
+			// entry's row (ads.example.com matching ads-example.com).
+			exec("/usr/bin/tail -n50 /var/log/pfblockerng/dnsbl.log | /usr/bin/grep -F -- {$domain} | /usr/bin/grep {$now} | /usr/bin/tail -1", $data, $retval);
 			if (isset($data[0]) && !empty($data[0])) {
 				$data = explode(',', $data[0]);
 				if (is_array($data) && !empty($data)) {
@@ -87,13 +99,16 @@ if (pathinfo($ptype['REQUEST_URI'], PATHINFO_EXTENSION) == 'js') {
 	$type = 'DNSBL-JS';
 	?>
 	<script type="text/javascript">
-		var dnsbl = "DNSBL : <?=$ptype['HTTP_HOST'];?> (JS)";
+		// JS-context-correct encoding of the host: json_encode() emits a
+		// properly-escaped JS string literal, so a host value cannot break out
+		// of the string into script context regardless of its contents.
+		var dnsbl = <?=json_encode('DNSBL : ' . $ptype['HTTP_HOST'] . ' (JS)');?>;
 	</script>
 	<?php
 }
 else {
 	header("Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0");
-	header("Cache-Control: post-check=0, pre-check=0", false);
+	header("Cache-Control: post-check=0, pre-check=0", FALSE);
 	header("Pragma: no-cache");
 	header("Expires: Sat, 26 Jul 2014 05:00:00 GMT");
 

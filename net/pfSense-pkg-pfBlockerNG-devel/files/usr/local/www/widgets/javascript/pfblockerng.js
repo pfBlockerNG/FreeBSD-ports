@@ -24,6 +24,58 @@
 var pfBlockerNGFailedTimer;
 var pfBlockerNGWidgetTimer;
 
+/**
+ * HTML-escape a value so it renders as text in an HTML context.
+ * Replaces the five HTML metacharacters (& < > " ') with their entities;
+ * non-string input is coerced with String().
+ *
+ * @param {*} s - value to escape.
+ * @returns {string} the escaped string.
+ */
+function pfBlockerNG_escapeHtml(s) {
+	var map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+	return String(s).replace(/[&<>"']/g, function(c) { return map[c]; });
+}
+
+/**
+ * Build the table-row cells for one widget alias/group from the AJAX columns.
+ * The data columns (count, updated, group) are HTML-escaped here; the server-rendered
+ * markup columns (alias cell, packets pivot link, status icon) pass through
+ * verbatim. Mirrors the per-column escaping contract in pfblockerng.widget.php.
+ *
+ * @param {string[]} cols - [alias, count, packets, updated, img, group ('ip'|'dnsbl')].
+ * @returns {string} a complete <tr>...</tr> table row; the caller concatenates
+ *   the rows with join('') (no separator), so the markup stays well-formed.
+ */
+function pfBlockerNG_buildWidgetRow(cols) {
+	var line = '<tr data-pfb-group="' + pfBlockerNG_escapeHtml(cols[5]) + '"><td><small>' + cols[0] + '</small></td>';
+	line += '<td><small>' + pfBlockerNG_escapeHtml(cols[1]) + '</small></td>';
+	line += '<td><small>' + cols[2] + '</small></td>';
+	line += '<td><small>' + pfBlockerNG_escapeHtml(cols[3]) + '</small></td>';
+	line += '<td>' + cols[4] + '</td></tr>';
+	return line;
+}
+
+/**
+ * 'Sortable.sorted' handler: sortable.js re-sorts every #pfb-tbl row on a header click, so with
+ * Combined sort (IP/DNSBL) off, move the rows the server tagged dnsbl back behind the IP rows,
+ * keeping the clicked order inside each group (issues #3600, #3602).
+ *
+ * @param {Event} event - the bubbling 'Sortable.sorted' event; event.target is the table.
+ */
+function pfBlockerNG_onWidgetSorted(event) {
+	var table = event.target;
+	if (table.id !== 'pfb-tbl' || table.getAttribute('data-pfb-sortmix') === 'on') {
+		return;
+	}
+	var tbody = table.tBodies[0];
+	Array.prototype.filter.call(tbody.rows, function(row) {
+		return row.getAttribute('data-pfb-group') === 'dnsbl';
+	}).forEach(function(row) {
+		tbody.appendChild(row);
+	});
+}
+
 /* update timers (10000 ms = 10 seconds, 60000 ms = 1 minute, 300000 ms = 5 mins) */
 var pfBlockerNGupdateFailedDelay	= 300000;
 var pfBlockerNGupdateWidgetDelay	= 15000;
@@ -52,26 +104,23 @@ function pfBlockerNG_fetch_new_widget_callback(callback_data) {
 				} else if (row_split[2] == 'title') {
 					row_split[1] = row_split[1].replaceAll('_BR_', '\n');
 					$('.pfb_title_' + row_split[0]).attr('title', row_split[1]);
-				} else if (row_split[0] == 'PFBSTATUS') {
-					$('.PFBSTATUS').attr('class', row_split[1]).prop('title', row_split[2]);
-				} else if (row_split[0] == 'DNSBLSTATUS') {
-					$('.DNSBLSTATUS').attr('class', row_split[1]).prop('title', row_split[2]);
+				} else if (/^(PFBSTATUS|DNSBLSTATUS|PFBDNSSTATUS_[a-z]+)$/.test(row_split[0])) {
+					// The anchor class must be re-applied, not just the icon class: the AJAX
+					// payload carries only the icon class, and overwriting the whole class
+					// attribute would drop the anchor so the NEXT poll's selector matches
+					// nothing (issue #714). The regex keeps payload text out of the selector.
+					// The title lives on the icon's cell, where the widget renders it.
+					$('.' + row_split[0]).attr('class', row_split[0] + ' ' + row_split[1]).closest('td').attr('title', row_split[2]);
 				}
 			}
 			else if (row_cnt > 4) {
-				var line = '';
-				line =  '<td><small>' + row_split[0] + '</small></td>';
-				line += '<td><small>' + row_split[1] + '</small></td>';
-				line += '<td><small>' + row_split[2] + '</small></td>';
-				line += '<td><small>' + row_split[3] + '</small></td>';
-				line += '<td>' + row_split[4] + '</td></tr>';
-				new_data_to_add[new_data_to_add.length] = line;
+				new_data_to_add[new_data_to_add.length] = pfBlockerNG_buildWidgetRow(row_split);
 			}
 		}
 
 		if (new_data_to_add.length > 0) {
 			var tbody = $('#pfBNG-table');
-			tbody.html('<tr>' + new_data_to_add + '</tr>');
+			tbody.html(new_data_to_add.join(''));
 			$('body').popover({ selector: '[data-popover]', trigger: 'click hover', placement: 'right', delay: {show: 50, hide: 400}});
 			$('#pfB_col1, #pfB_col2, #pfB_col3, #pfB_col4').attr("data-sorted", false);
 		}
@@ -106,93 +155,107 @@ function fetch_new_pfBlockerNG_widget() {
 	});
 }
 
-/* start local AJAX engine */
-pfBlockerNGFailedTimer	= setInterval('fetch_new_pfBlockerNG_failed()', pfBlockerNGupdateFailedDelay);
-pfBlockerNGWidgetTimer	= setInterval('fetch_new_pfBlockerNG_widget()', pfBlockerNGupdateWidgetDelay);
+if (typeof window !== 'undefined') {
+	// Document-level: event.target scopes it to #pfb-tbl, so no table lookup is needed.
+	document.addEventListener('Sortable.sorted', pfBlockerNG_onWidgetSorted);
 
-events.push(function() {
+	/* start local AJAX engine */
+	pfBlockerNGFailedTimer	= setInterval('fetch_new_pfBlockerNG_failed()', pfBlockerNGupdateFailedDelay);
+	pfBlockerNGWidgetTimer	= setInterval('fetch_new_pfBlockerNG_widget()', pfBlockerNGupdateWidgetDelay);
 
-	// Keep popover open on mouseover
-	// Reference: http://jsfiddle.net/wojtekkruszewski/zf3m7/22/
-	var originalLeave = $.fn.popover.Constructor.prototype.leave;
-	$.fn.popover.Constructor.prototype.leave = function(obj) {
-		var self = obj instanceof this.constructor ?
-			obj : $(obj.currentTarget)[this.type](this.getDelegateOptions()).data('bs.' + this.type)
-		var container, timeout;
+	events.push(function() {
 
-		originalLeave.call(this, obj);
+		// Keep popover open on mouseover
+		// Reference: http://jsfiddle.net/wojtekkruszewski/zf3m7/22/
+		var originalLeave = $.fn.popover.Constructor.prototype.leave;
+		$.fn.popover.Constructor.prototype.leave = function(obj) {
+			var self = obj instanceof this.constructor ?
+				obj : $(obj.currentTarget)[this.type](this.getDelegateOptions()).data('bs.' + this.type)
+			var container, timeout;
 
-		if (obj.currentTarget) {
-			container = $(obj.currentTarget).siblings('.popover')
-			timeout = self.timeout;
-			container.one('mouseenter', function() {
+			originalLeave.call(this, obj);
 
-				// We entered the actual popover - call off the dogs
-				clearTimeout(timeout);
+			if (obj.currentTarget) {
+				container = $(obj.currentTarget).siblings('.popover')
+				timeout = self.timeout;
+				container.one('mouseenter', function() {
 
-				// Increase pfBNG refresh intervals
-				var pfBlockerNGupdateFailedDelay	= 90000;
-				var pfBlockerNGupdateWidgetDelay	= 90000;
+					// We entered the actual popover - call off the dogs
+					clearTimeout(timeout);
 
-				clearInterval(pfBlockerNGFailedTimer);
-				clearInterval(pfBlockerNGWidgetTimer);
+					// Increase pfBNG refresh intervals
+					var pfBlockerNGupdateFailedDelay	= 90000;
+					var pfBlockerNGupdateWidgetDelay	= 90000;
 
-				// Let's monitor popover content instead
-				container.one('mouseleave', function(){
-					$.fn.popover.Constructor.prototype.leave.call(self, self);
-
-					// Reset pfBNG refresh intervals
-					var pfBlockerNGupdateFailedDelay	= 300000;
-					var pfBlockerNGupdateWidgetDelay	= 15000;
-	
 					clearInterval(pfBlockerNGFailedTimer);
 					clearInterval(pfBlockerNGWidgetTimer);
 
-					pfBlockerNGFailedTimer	= setInterval('fetch_new_pfBlockerNG_failed()', pfBlockerNGupdateFailedDelay);
-					pfBlockerNGWidgetTimer	= setInterval('fetch_new_pfBlockerNG_widget()', pfBlockerNGupdateWidgetDelay);
-				});
-			})
-		}
-	};
-	$('body').popover({ selector: '[data-popover]', trigger: 'click hover', placement: 'right', delay: {show: 50, hide: 400}});
+					// Let's monitor popover content instead
+					container.one('mouseleave', function(){
+						$.fn.popover.Constructor.prototype.leave.call(self, self);
 
-	$('[id^=pfblockerngackicon]').click(function(event) {
-		$('#pfblockerngack').val('true');
-		$('#formicons').submit();
-	});
+						// Reset pfBNG refresh intervals
+						var pfBlockerNGupdateFailedDelay	= 300000;
+						var pfBlockerNGupdateWidgetDelay	= 15000;
 
-	$('[id^=pfblockerngclearicon]').click(function(event) {
-		$('<div></div>').appendTo('body')
-		.html('<div><h6>Select which Packet Counts to clear:</h6><small>Note: Selecting \'IP\' will clear all pfSense counters.</small></div>')
-		.dialog({
-			modal: true,
-			autoOpen: true,
-			resizable: false,
-			closeOnEscape: true,
-			width: 'auto',
-			title: 'Clear Packet Counts:',
-			position: { my: 'top+50px', at: 'top' },
-			buttons: {
-				All: function () {
-					$('#pfblockerngclearall').val(true);
-					$(this).dialog("close");
-					$('#formicons').submit();
-				},
-				IP: function () {
-					$('#pfblockerngclearip').val(true);
-					$(this).dialog("close");
-					$('#formicons').submit();
-				},
-				DNSBL: function () {
-					$('#pfblockerngcleardnsbl').val(true);
-					$(this).dialog("close");
-					$('#formicons').submit();
-				},
-				Cancel: function (event, ui) {
-					$(this).dialog("close");
-				}
+						clearInterval(pfBlockerNGFailedTimer);
+						clearInterval(pfBlockerNGWidgetTimer);
+
+						pfBlockerNGFailedTimer	= setInterval('fetch_new_pfBlockerNG_failed()', pfBlockerNGupdateFailedDelay);
+						pfBlockerNGWidgetTimer	= setInterval('fetch_new_pfBlockerNG_widget()', pfBlockerNGupdateWidgetDelay);
+					});
+				})
 			}
-		}).css('background-color','#ffd700');
-		$("div[role=dialog]").find('button').addClass('btn-info btn-xs');
+		};
+		$('body').popover({ selector: '[data-popover]', trigger: 'click hover', placement: 'right', delay: {show: 50, hide: 400}});
+
+		$('[id^=pfblockerngackicon]').click(function(event) {
+			$('#pfblockerngack').val('true');
+			$('#formicons').submit();
+		});
+
+		$('[id^=pfblockerngclearicon]').click(function(event) {
+			$('<div></div>').appendTo('body')
+			.html('<div><p>Select the packet counters to clear.</p><p><span class="text-danger"><strong>Warning:</strong></span> Selecting <strong>IP</strong> clears all pfSense counters.</p></div>')
+			.dialog({
+				modal: true,
+				autoOpen: true,
+				resizable: false,
+				closeOnEscape: true,
+				width: 'auto',
+				title: 'Clear Packet Counts:',
+				position: { my: 'top+50px', at: 'top' },
+				buttons: {
+					All: function () {
+						$('#pfblockerngclearall').val(true);
+						$(this).dialog("close");
+						$('#formicons').submit();
+					},
+					IP: function () {
+						$('#pfblockerngclearip').val(true);
+						$(this).dialog("close");
+						$('#formicons').submit();
+					},
+					DNSBL: function () {
+						$('#pfblockerngcleardnsbl').val(true);
+						$(this).dialog("close");
+						$('#formicons').submit();
+					},
+					Cancel: function (event, ui) {
+						$(this).dialog("close");
+					}
+				}
+			}).css({'background-color': '#ffd700', 'color': '#000000'});
+			$("div[role=dialog]").find('button').addClass('btn-info btn-xs');
+		});
 	});
-});
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+	module.exports = {
+		pfBlockerNG_escapeHtml: pfBlockerNG_escapeHtml,
+		pfBlockerNG_buildWidgetRow: pfBlockerNG_buildWidgetRow,
+		pfBlockerNG_fetch_new_widget_callback: pfBlockerNG_fetch_new_widget_callback,
+		pfBlockerNG_onWidgetSorted: pfBlockerNG_onWidgetSorted
+	};
+}

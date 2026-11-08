@@ -27,6 +27,16 @@ require_once('/usr/local/pkg/pfblockerng/pfblockerng.inc');
 global $pfb;
 pfb_global();
 
+/*
+ * Discover available Blacklist providers by globbing '*_global_usage' files in
+ * the package directory. Each file is a plain-text feed definition (KEY: value)
+ * describing one squidguard-style provider: metadata (XML/TITLE/DESCR/FEED/SIZE/
+ * WEBSITE/LICENSE) plus the list of categories it offers (NAME: lines, with
+ * per-language NAME/DESC variants). Dropping in a new '*_global_usage' file adds
+ * a provider to this page with no code changes; it is parsed below into
+ * $blacklist_types / $blacklist_options. Feeds are fetched from FEED and
+ * extracted into /var/db/pfblockerng/<XML>/ by pfblockerng.inc.
+ */
 $blacklist_types = glob("/usr/local/pkg/pfblockerng/*_global_usage");
 
 // Temporarily Discontinue Shallalist
@@ -51,7 +61,7 @@ if (!empty($blacklist_types)) {
 			foreach ($list['CONTENTS'] as $line => $data) {
 
 				$data = trim($data);
-				if (substr($data, 0, 1) == '#' || empty($data)) {
+				if (str_starts_with($data, '#') || empty($data)) {
 					unset($list['CONTENTS'][$line]);
 					continue;
 				}
@@ -99,14 +109,14 @@ if (!empty($blacklist_types)) {
 	}
 }
 
-$pfb['bconfig']	= config_get_path('installedpackages/pfblockerngblacklist', []);
+$pfb['bconfig']	= PfbConfig::readSection('installedpackages/pfblockerngblacklist');
 
 $pconfig = array();
 $pconfig['blacklist_enable']		= $pfb['bconfig']['blacklist_enable']				?: 'Disable';
 $pconfig['blacklist_lang']		= $pfb['bconfig']['blacklist_lang']				?: 'EN';
-$pconfig['blacklist_selected']		= explode(',', $pfb['bconfig']['blacklist_selected'])		?: array();
+$pconfig['blacklist_selected']		= pfb_csv_list($pfb['bconfig']['blacklist_selected'] ?? NULL);
 $pconfig['blacklist_freq']		= $pfb['bconfig']['blacklist_freq']				?: 'Never';
-$pconfig['blacklist_logging']		= $pfb['bconfig']['blacklist_logging']				?: 'enabled';
+$pconfig['blacklist_logging']		= pfb_dnsbl_group_logging(pfb_dnsbl_blacklist_logging($pfb['bconfig']));
 
 if (isset($blacklist_types)) {
 	foreach ($blacklist_types as $type => $setting) {
@@ -132,26 +142,26 @@ if (isset($blacklist_types)) {
 $options_blacklist_enable	= ['Disable' => 'Disable', 'Enable' => 'Enable'];
 $options_blacklist_lang		= ['EN' => 'English', 'DE' => 'German', 'FR' => 'French', 'IT' => 'Italian',
 					'NL' => 'Dutch', 'PT' => 'Portuguese', 'ES' => 'Spanish', 'RU' => 'Russian'];
-$options_blacklist_freq		= ['Never' => 'Never', 'EveryDay' => 'Once a day (Random hour)', 'Weekly' => 'Weekly (Sunday)'];
-$options_blacklist_logging	= ['enabled' => 'Enabled', 'disabled' => 'Disabled'];
+$options_blacklist_freq		= ['Never' => 'Never', 'EveryDay' => 'Once a day', 'Weekly' => 'Weekly'];
+$options_blacklist_logging	= ['default' => 'Default'] + pfb_dnsbl_mechanism_labels();
+
+// Unconditional (not just inside the $_POST branch below): $input_errors is read
+// at print_input_errors() on every GET page load too (issue #1496).
+$savemsg = '';
+$input_errors = array();
 
 if ($_POST && !$_POST['enableall'] && !$_POST['disableall']) {
 
 	$rowid		= 0;
 	$a_list		= array();
 	$config_mod	= FALSE;
-	if (isset($input_errors)) {
-		unset($input_errors);
-	}
-	if (isset($savemsg)) {
-		unset($savemsg);
-	}
 
 	if (isset($_POST['blacklist_enable'])) {
 		if (!array_key_exists($_POST['blacklist_enable'], $options_blacklist_enable)) {
 			$_POST['blacklist_enable'] = 'Disable';
 		}
 		$pfb['bconfig']['blacklist_enable'] = $_POST['blacklist_enable'];
+		// foreign key: pfblockerngblacklist not in registry; write directly
 		config_set_path('installedpackages/pfblockerngblacklist/blacklist_enable', $pfb['bconfig']['blacklist_enable']);
 		$config_mod = TRUE;
 	}
@@ -161,6 +171,7 @@ if ($_POST && !$_POST['enableall'] && !$_POST['disableall']) {
 			$_POST['blacklist_lang'] = 'EN';
 		}
 		$pfb['bconfig']['blacklist_lang'] = $_POST['blacklist_lang'];
+		// foreign key: pfblockerngblacklist not in registry; write directly
 		config_set_path('installedpackages/pfblockerngblacklist/blacklist_lang', $pfb['bconfig']['blacklist_lang']);
 		$config_mod = TRUE;
 	}
@@ -171,7 +182,7 @@ if ($_POST && !$_POST['enableall'] && !$_POST['disableall']) {
 		$select_options = array (	'blacklist_enable'	=> 'Disable',
 						'blacklist_lang'	=> 'EN',
 						'blacklist_freq'	=> 'Never',
-						'blacklist_logging'	=> 'enabled',
+						'blacklist_logging'	=> 'default',
 						);
 
 		foreach ($select_options as $s_option => $s_default) {
@@ -196,6 +207,7 @@ if ($_POST && !$_POST['enableall'] && !$_POST['disableall']) {
 			$_POST['blacklist_selected'] = '';
 		}
 
+		// foreign keys: pfblockerngblacklist sub-keys not in registry; write directly
 		if (isset($_POST['blacklist_selected'])) {
 			$pfb['bconfig']['blacklist_selected']	= implode(',', (array)$_POST['blacklist_selected'])	?: '';
 			config_set_path('installedpackages/pfblockerngblacklist/blacklist_selected', $pfb['bconfig']['blacklist_selected']);
@@ -258,6 +270,7 @@ if ($_POST && !$_POST['enableall'] && !$_POST['disableall']) {
 			$a_list[] = $list;
 		}
 		$pfb['bconfig']['item'] = $a_list;
+		// foreign structure: pfblockerngblacklist/item is a dynamic per-type list blob, not in registry
 		config_set_path('installedpackages/pfblockerngblacklist/item', $pfb['bconfig']['item']);
 
 		// Check for Large category selections and show savemsg
@@ -271,13 +284,17 @@ if ($_POST && !$_POST['enableall'] && !$_POST['disableall']) {
 			}
 		}
 		if ($savemsg) {
-			$savemsg .= 'BR *** Large categories selected! Please review DNSBL TLD memory recommendations before continuing ***';
+			$savemsg .= 'BR Large categories selected: these can use a lot of memory, especially with Wildcard Blocking on.';
 		}
 	}
 
-	if ($config_mod && !isset($input_errors)) {
+	// issue #1496: $input_errors is now unconditionally an array (see top-of-file
+	// init) -- isset() would always be TRUE and permanently block save; empty()
+	// preserves the original "no errors were recorded" semantics.
+	if ($config_mod && empty($input_errors)) {
 
 		write_config('[ pfBlockerNG ] save DNSBL Category settings');
+		pfb_mark_pending_changes();	// applies on the next Update, not on save
 		if ($savemsg) {
 			header("Location: /pfblockerng/pfblockerng_blacklist.php?savemsg={$savemsg}");
 		} else {
@@ -286,8 +303,9 @@ if ($_POST && !$_POST['enableall'] && !$_POST['disableall']) {
 	}
 }
 
-$pgtitle = array(gettext('Firewall'), gettext('pfBlockerNG'), gettext('DNSBL'), gettext('DNSBL Category'));
-$pglinks = array('', '/pfblockerng/pfblockerng_general.php', '/pfblockerng/pfblockerng_dnsbl.php', '@self');
+$pgtitle = array(gettext('Firewall'), gettext('pfBlockerNG'), gettext('DNS'), gettext('DNSBL Category'));
+$pglinks = array('', '/pfblockerng/pfblockerng_general.php', '/pfblockerng/pfblockerng_dns_general.php', '@self');
+$shortcut_section = 'pfblockerng';
 include_once('head.inc');
 
 if ($input_errors) {
@@ -298,21 +316,26 @@ if ($input_errors) {
 $get_req = pfb_alerts_default_page();
 
 $tab_array	= array();
-$tab_array[]	= array(gettext('General'),		false,	'/pfblockerng/pfblockerng_general.php');
-$tab_array[]	= array(gettext('IP'),			false,	'/pfblockerng/pfblockerng_ip.php');
-$tab_array[]	= array(gettext('DNSBL'),		true,	'/pfblockerng/pfblockerng_dnsbl.php');
-$tab_array[]	= array(gettext('Update'),		false,	'/pfblockerng/pfblockerng_update.php');
-$tab_array[]	= array(gettext('Reports'),		false,	"/pfblockerng/pfblockerng_alerts.php{$get_req}");
-$tab_array[]	= array(gettext('Feeds'),		false,	'/pfblockerng/pfblockerng_feeds.php');
-$tab_array[]	= array(gettext('Logs'),		false,	'/pfblockerng/pfblockerng_log.php');
-$tab_array[]	= array(gettext('Sync'),		false,	'/pfblockerng/pfblockerng_sync.php');
-display_top_tabs($tab_array, true);
+$tab_array[]	= array(gettext('General'),		FALSE,	'/pfblockerng/pfblockerng_general.php');
+$tab_array[]	= array(gettext('IP'),			FALSE,	'/pfblockerng/pfblockerng_ip.php');
+$tab_array[]	= array(gettext('DNS'),		TRUE,	'/pfblockerng/pfblockerng_dns_general.php');
+$tab_array[]	= array(gettext('Update'),		FALSE,	'/pfblockerng/pfblockerng_update.php');
+$tab_array[]	= array(gettext('Reports'),		FALSE,	"/pfblockerng/pfblockerng_alerts.php{$get_req}");
+$tab_array[]	= array(gettext('Feeds'),		FALSE,	'/pfblockerng/pfblockerng_feeds.php');
+$tab_array[]	= array(gettext('Logs'),		FALSE,	'/pfblockerng/pfblockerng_log.php');
+$tab_array[]	= array(gettext('Sync'),		FALSE,	'/pfblockerng/pfblockerng_sync.php');
+pfb_software_add_tab($tab_array);
+display_top_tabs($tab_array, TRUE);
 
 $tab_array	= array();
-$tab_array[]	= array(gettext('DNSBL Groups'),	false,	'/pfblockerng/pfblockerng_category.php?type=dnsbl');
-$tab_array[]	= array(gettext('DNSBL Category'),	true,	'/pfblockerng/pfblockerng_blacklist.php');
-$tab_array[]	= array(gettext('DNSBL SafeSearch'),	false,	'/pfblockerng/pfblockerng_safesearch.php');
-display_top_tabs($tab_array, true);
+$tab_array[]	= array(gettext('General'),	FALSE,	'/pfblockerng/pfblockerng_dns_general.php');
+$tab_array[]	= array(gettext('pfB-DNS'),	FALSE,		'/pfblockerng/pfblockerng_dns.php');
+$tab_array[]	= array(gettext('DNSBL'),	FALSE,		'/pfblockerng/pfblockerng_dnsbl.php');
+$tab_array[]	= array(gettext('DNSBL Groups'),	FALSE,	'/pfblockerng/pfblockerng_category.php?type=dnsbl');
+$tab_array[]	= array(gettext('DNSBL Category'),	TRUE,	'/pfblockerng/pfblockerng_blacklist.php');
+$tab_array[]	= array(gettext('DNSBL SafeSearch'),	FALSE,	'/pfblockerng/pfblockerng_safesearch.php');
+display_top_tabs($tab_array, TRUE);
+pfb_print_pending_changes_box();
 
 if (isset($_REQUEST['savemsg'])) {
 	$savemsg = str_replace('BR', '<br />', htmlspecialchars($_REQUEST['savemsg']));
@@ -322,41 +345,40 @@ if (isset($_REQUEST['savemsg'])) {
 // Create Form
 $form = new Form('Save');
 
-$section = new Form_Section('Blacklist Category settings');
+$section = new Form_Section('DNSBL Category Settings');
 $section->addInput(new Form_StaticText(
 	'Links',
 	'<small>'
-	. '<a href="/firewall_aliases.php" target="_blank">Firewall Aliases</a>&emsp;'
-	. '<a href="/firewall_rules.php" target="_blank">Firewall Rules</a>&emsp;'
-	. '<a href="/status_logs_filter.php" target="_blank">Firewall Logs</a></small>'
+	. '<a href="/firewall_aliases.php" target="_blank" rel="noopener noreferrer">Firewall Aliases</a>&emsp;'
+	. '<a href="/firewall_rules.php" target="_blank" rel="noopener noreferrer">Firewall Rules</a>&emsp;'
+	. '<a href="/status_logs_filter.php" target="_blank" rel="noopener noreferrer">Firewall Logs</a></small>'
 ));
 
 $section->addInput(new Form_Select(
 	'blacklist_enable',
-	gettext('Blacklist Category'),
+	gettext('DNSBL Category'),
 	$pconfig['blacklist_enable'],
 	$options_blacklist_enable
-))->setHelp('Select to enable DNSBL category based Blacklist(s)<br />'
-		. '<span class="text-danger">Note: </span> Save changes prior to enable/disable'
-		. '<br /><span class="text-danger">Note: </span>To achieve the full potential of Category blocking,'
-		. ' the <strong>TLD</strong> option should be utilized which will allow blocking of all sub-domains.')
+))->setHelp('<p>Enable category-based domain blocking.</p>'
+		. '<p>Changing this setting saves the page immediately.</p>'
+		. '<p>To also block subdomains of listed domains, enable <strong>Wildcard Blocking</strong> on <strong>DNS</strong> &gt; <strong>DNSBL</strong>.</p>')
   ->setAttribute('style', 'width: auto');
 
 if (!empty($blacklist_types)) {
 	$section->addInput(new Form_Select(
 		'blacklist_selected',
-		gettext('Blacklists'),
+		gettext('Category Providers'),
 		$pconfig['blacklist_selected'],
 		$blacklist_options,
 		TRUE
-	))->setHelp('Select Blacklist(s) to enable')
+	))->setHelp('Select the category providers to use.')
 	  ->setAttribute('size', count($blacklist_types) ?: 1)
 	  ->setAttribute('style', 'width: auto');
 }
 else {
 	$section->addInput(new Form_StaticText(
 		NULL,
-		'<span style="color: red;">No Blacklist(s) global_usage files have been found!</span><br /><br />'
+		'<span class="text-danger">No category providers are installed.</span>'
 	));
 }
 
@@ -364,8 +386,7 @@ $section->addInput(new Form_Select(
 	'blacklist_lang',
 	gettext('Language'),
 	$pconfig['blacklist_lang'],
-	['EN' => 'English', 'DE' => 'German', 'FR' => 'French', 'IT' => 'Italian',
-	'NL' => 'Dutch', 'PT' => 'Portuguese', 'ES' => 'Spanish', 'RU' => 'Russian']
+	$options_blacklist_lang
 ))->setHelp('Default: <strong>English</strong><br />
 	Select the language setting. Not all languages have been fully translated.')
   ->setAttribute('style', 'width: auto');
@@ -374,20 +395,19 @@ $section->addInput(new Form_Select(
 	'blacklist_freq',
 	gettext('Update Frequency'),
 	$pconfig['blacklist_freq'],
-	['Never' => 'Never', 'EveryDay' => 'Once a day (Random hour)', 'Weekly' => 'Weekly (Sunday)']
+	$options_blacklist_freq
 ))->setHelp('Default: <strong>Never</strong><br />
-	Select how often the Blacklist database(s) will be downloaded.')
+	Select how often to download category databases. Runs at the <strong>Default Schedule</strong> time and weekday on <strong>General</strong>.')
   ->setAttribute('style', 'width: auto');
 
 $section->addInput(new Form_Select(
 	'blacklist_logging',
-	'Logging',
+	'Logging/Blocking Mode',
 	$pconfig['blacklist_logging'],
-	['enabled' => 'Enabled', 'disabled' => 'Disabled']
-))->setHelp("Default: <strong>Enabled</strong><br />
-	When 'Enabled', Domains are sinkholed to the DNSBL VIP and logged via the DNSBL Web Server.<br />
-	When 'Disabled', '0.0.0.0' will be used instead of the DNSBL VIP.<br />
-	A 'Force Reload - DNSBL' is required for changes to take effect")
+	$options_blacklist_logging
+))->setHelp('<strong>Default</strong> follows the <strong>Global Logging/Blocking Mode</strong> on <strong>DNS</strong> &gt; <strong>DNSBL</strong>; an explicit choice applies to <strong>DNSBL Category</strong> only.<br />'
+	. pfb_dnsbl_mechanism_help()
+	. 'Set <strong>Run Scope</strong> to <strong>DNSBL</strong> or <strong>Both</strong>, then use <strong>Run Now</strong>.')
   ->setAttribute('style', 'width: auto');
 
 $form->add($section);
@@ -408,8 +428,8 @@ foreach ($blacklist_types as $type => $setting) {
 
 	$section->addInput(new Form_StaticText(
 		gettext('Links'),
-		"<a href=\"{$setting['WEBSITE']}\" target=\"_blank\"><i class=\"fa-solid fa-globe\"></i>&nbsp;{$setting['TITLE']} Summary</a>&emsp;"
-		. "<a href=\"{$setting['LICENSE']}\" target=\"_blank\"><i class=\"fa-solid fa-globe\"></i>&nbsp;{$setting['TITLE']} {$lic_txt}</a>"
+		"<a href=\"{$setting['WEBSITE']}\" target=\"_blank\" rel=\"noopener noreferrer\"><i class=\"fa-solid fa-globe\"></i>&nbsp;{$setting['TITLE']} Summary</a>&emsp;"
+		. "<a href=\"{$setting['LICENSE']}\" target=\"_blank\" rel=\"noopener noreferrer\"><i class=\"fa-solid fa-globe\"></i>&nbsp;{$setting['TITLE']} {$lic_txt}</a>"
 	));
 
 	// Add username/password fields if required
@@ -429,12 +449,15 @@ foreach ($blacklist_types as $type => $setting) {
 			'password',
 			$pconfig['blacklist_' . $type . '_password'],
 			['placeholder' => 'Enter the password']
-		))->setHelp("Password<br /><br />")
+		))
 		  ->setAttribute('autocomplete', 'off');
 	}
 
 	// Build array of Blacklist categories and descriptions by language
 	$data = array();
+	// issue #1497: read at 469/474 if a malformed feed ever orders a DESC/NAME
+	// line before its NAME: line; every real feed has NAME: first per line.
+	$cat = array();
 	if (isset($blacklist_types[$type]['CONTENTS']) && !empty($blacklist_types[$type]['CONTENTS'])) {
 		foreach ($blacklist_types[$type]['CONTENTS'] as $line) {
 
@@ -460,7 +483,14 @@ foreach ($blacklist_types as $type => $setting) {
 	ksort($data, SORT_NATURAL);
 	foreach ($data as $category => $info) {
 
-		$category_lang = $info[$pconfig['blacklist_lang']][1] ?: $info['EN'][1];
+		// issue #1777: most providers document a DESC/NAME line for only a
+		// subset of languages per category -- $l/$e guard the missing-index
+		// read; the EN fallback below is load-bearing (an empty translation
+		// must still fall back to EN -- pfb_is_empty, issue #1792, so a
+		// translation of literally '0' is kept, never treated as absent).
+		$l = $info[$pconfig['blacklist_lang']] ?? array();
+		$e = $info['EN'] ?? array();
+		$category_lang = pfb_is_empty($l[1] ?? NULL) ? ($e[1] ?? '') : $l[1];
 
 		$selected = FALSE;
 		if (isset($_POST['enableall'][$type])) {
@@ -491,7 +521,8 @@ foreach ($blacklist_types as $type => $setting) {
 
 		$group->add(new Form_StaticText(
 			'',
-			$info[$pconfig['blacklist_lang']][0] ?: $info['EN'][0]
+			// issue #1792: same honest fallback as $category_lang above.
+			pfb_is_empty($l[0] ?? NULL) ? ($e[0] ?? '') : $l[0]
 		))->setWidth(7);
 
 		$section->add($group);
@@ -523,9 +554,8 @@ foreach ($blacklist_types as $type => $setting) {
 }
 
 print($form);
-print_callout('<p><strong>Setting changes are applied via CRON or \'Force Update|Reload\' only!</strong><br /><br />
-		DNSBL Category Feeds are processed first, followed by the DNSBL Groups.<br />
-		DNSBL Groups can be prioritized first, by selecting the \'Group Order\' option.</p>');
+print_callout('<p>Saved changes are applied automatically at a schedule check, normally within 15 minutes while pfBlockerNG is enabled. If an <strong>Automatic Apply Window</strong> is set on <strong>General</strong>, changes wait for that window. To apply them now, open <strong>Update</strong> and use <strong>Run Now</strong>.</p>
+		<p>DNSBL Category feeds are processed before DNSBL groups. To process a DNSBL group first, set its <strong>Group Order</strong> to <strong>Primary</strong>.</p>');
 ?>
 
 <script type="text/javascript">

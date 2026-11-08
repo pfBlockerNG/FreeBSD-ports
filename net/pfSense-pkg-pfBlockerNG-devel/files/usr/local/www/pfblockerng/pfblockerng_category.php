@@ -28,13 +28,9 @@ global $pfb;
 pfb_global();
 
 $action = $gtype = '';
+$post_type_valid = FALSE;
 $rowdata = array();
 $rowid = 0;
-
-// Called via AJAX (Save page order format/settings)
-if (isset($_REQUEST) && isset($_REQUEST['act']) && ($_REQUEST['act'] == 'update')) {
-	$_POST = $_REQUEST;
-}
 
 if (isset($_GET)) {
 	if (isset($_GET['savemsg']) && !empty($_GET['savemsg'])) {
@@ -64,11 +60,9 @@ if (isset($_POST)) {
 			$rowid = $temp_value ?: 0;
 		}
 	}
-	if (isset($_POST['type']) && !empty($_POST['type'])) {
-		$temp_value = pfb_filter($_POST['type'], PFB_FILTER_HTML, 'Category');
-		if (in_array($temp_value, array('ipv4', 'ipv6', 'geoip', 'dnsbl'))) {
-			$gtype = $temp_value;
-		}
+	$post_type_valid = isset($_POST['type']) && is_string($_POST['type']) && in_array($_POST['type'], array('ipv4', 'ipv6', 'geoip', 'dnsbl'), TRUE);
+	if ($post_type_valid) {
+		$gtype = $_POST['type'];
 	}
 
 	// AJAX request
@@ -87,8 +81,17 @@ if (isset($_POST)) {
 	}
 }
 
+if (!empty($action) && !$post_type_valid) {
+	print(json_encode(array('Failed Type')));
+	exit;
+}
+
 // Set 'active' GUI Tabs
 $active = array('ip' => FALSE, 'ipv4' => FALSE, 'ipv6' => FALSE, 'dnsbl' => FALSE, 'geoip' => FALSE);
+
+// Default so $conf_type is defined on every path. The GeoIP case below doesn't set it;
+// it is only ever used under the `$type != 'GeoIP'` guard, where the switch always sets it.
+$conf_type = '';
 
 switch ($gtype) {
 	case 'ipv4':
@@ -145,7 +148,7 @@ if (isset($rowdata[0]) && empty($rowdata[0])) {
 	if (isset($rowdata_path)) {
 		config_set_path($rowdata_path, $rowdata);
 	}
-	write_config("pfBlockerNG: Removed empty rowdata", false);
+	write_config("pfBlockerNG: Removed empty rowdata", FALSE);
 }
 
 if (!empty($action) && isset($gtype) && isset($rowid)) {
@@ -155,11 +158,15 @@ if (!empty($action) && isset($gtype) && isset($rowid)) {
 			// Delete Table row (via POST)
 			$name = pfb_filter($rowdata[$rowid]['aliasname'], PFB_FILTER_WORD, 'Category');
 			if (!empty($name) && isset($rowdata[$rowid])) {
+				// issue #1014/#1019/#2060: close the deleted alias's alias-pass-managed
+				// ledger entries (download, script) before the row config node is gone.
+				pfb_sync_status_close_removed_alias($gtype, $name, $pfb['dbdir']);
 				unset($rowdata[$rowid]);
 				if (isset($rowdata_path)) {
 					config_del_path("{$rowdata_path}/{$rowid}");
 				}
-				write_config("pfBlockerNG: Removed [ {$type} | {$name} ]", false);
+				write_config("pfBlockerNG: Removed [ {$type} | {$name} ]", FALSE);
+				pfb_mark_pending_changes();	// applies on the next Update, not on save
 				$savemsg = "Removed [ Type: {$type}, Name: {$name} ]";
 			} else {
 				$savemsg = "Could not delete [ Type: {$type}, Name: {$name} ], not found";
@@ -168,27 +175,17 @@ if (!empty($action) && isset($gtype) && isset($rowid)) {
 			exit;
 
 		case 'update':
-			if (isset($input_errors)) {
-				unset($input_errors);
+			// issue #1496: reads at 251/286/300 hit undefined on normal AJAX
+			// act=update/reorder flows with no init (the old idiom was a no-op).
+			// No isset($input_errors) consumer downstream -- safe unconditional init.
+			$input_errors = array();
+			// issue #3288: a VALIDATED bulk Save runs the upgrade facade BEFORE
+			// persisting choices. $rowdata (read at :123) is now stale for any row
+			// the facade just converted -- refresh before postdata/ids[] below.
+			if ($gtype == 'dnsbl' && pfb_dnsbl_policy_upgrade()) {
+				$rowdata = config_get_path('installedpackages/pfblockerngdnsbl/config', []);
 			}
 			if (is_array($rowdata)) {
-				$action_values = array(	'Disabled',
-							'Deny_Inbound', 
-							'Deny_Outbound',
-							'Deny_Both',
-							'Permit_Inbound',
-							'Permit_Outbound',
-							'Permit_Both',
-							'Match_Inbound',
-							'Match_Outbound',
-							'Match_Both',
-							'Alias_Deny',
-							'Alias_Permit',
-							'Alias_Match',
-							'Alias_Native',
-							'unbound'
-							);	
-
 				$cron_values = array(	'Never',
 							'01hour',
 							'02hours',
@@ -203,8 +200,17 @@ if (!empty($action) && isset($gtype) && isset($rowid)) {
 
 				$aliaslog_values = array('enabled',
 							'disabled',
-							'disabled_log'
+							'disabled_log',
+							'nxdomain_log',	// issue #31: NXDOMAIN logging
+							'nxdomain',	// issue #31: NXDOMAIN no logging
+							'nodata_log',	// issue #3243: NODATA logging
+							'nodata'	// issue #3243: NODATA no logging
 							);
+
+				// issue #3288: the DNSBL-only 'logging' field additionally accepts the
+				// live-inheritance 'default' token; 'aliaslog' (ipv4/ipv6) does not.
+				$logging_values = array_merge($aliaslog_values, array('default'));
+
 
 				// Parse POST and save new values
 				if (!empty($post_data) && is_array($post_data)) {
@@ -217,10 +223,15 @@ if (!empty($action) && isset($gtype) && isset($rowid)) {
 							}
 
 							// Validate Variable names
-							if (in_array($k_field[0], array('action', 'cron', 'aliaslog', 'logging'))) {
+							$valid_vars = ($gtype === 'dnsbl') ? array('action', 'cron', 'logging') : array('action', 'cron', 'aliaslog');
+							if (in_array($k_field[0], $valid_vars)) {
 								$variable = $k_field[0];
 							} else {
 								$input_errors[] = "Failed Variable: " . htmlspecialchars($k_field[0]);
+								// issue #1496: mirrors the sibling continue below (!is_string($value))
+								// -- without it, switch ($variable) runs with $variable undefined on
+								// an invalid prefix, producing a warning plus a second garbled error.
+								continue;
 							}
 
 							// Validate Rowid
@@ -230,10 +241,14 @@ if (!empty($action) && isset($gtype) && isset($rowid)) {
 							} else {
 								$input_errors[] = "Failed Rowid: " . htmlspecialchars($k_field[1]);
 							}
+							if (!is_string($value)) {
+								$input_errors[] = 'Failed Value';
+								continue;
+							}
 
 							switch ($variable) {
 								case 'action':
-									if (!in_array($value, $action_values)) {
+									if (!pfb_group_action_valid($value, $gtype)) {
 										$input_errors[] = "Failed Action: " . htmlspecialchars($value);
 									}
 									break;
@@ -243,9 +258,13 @@ if (!empty($action) && isset($gtype) && isset($rowid)) {
 									}
 									break;
 								case 'aliaslog':
-								case 'logging':
-									if (!in_array($value, $aliaslog_values)) {
+									if ($gtype === 'dnsbl' || !in_array($value, $aliaslog_values)) {
 										$input_errors[] = "Failed Aliaslog: " . htmlspecialchars($value);
+									}
+									break;
+								case 'logging':
+									if ($gtype !== 'dnsbl' || !in_array($value, $logging_values)) {
+										$input_errors[] = "Failed Logging: " . htmlspecialchars($value);
 									}
 									break;
 								default:
@@ -302,7 +321,8 @@ if (!empty($action) && isset($gtype) && isset($rowid)) {
 
 				// Save postdata and Table re-ordering
 				if (!$input_errors) {
-					write_config("pfBlockerNG: Saved page order format/settings for [ {$type} ]", false);
+					write_config("pfBlockerNG: Saved page order format/settings for [ {$type} ]", FALSE);
+					pfb_mark_pending_changes();	// applies on the next Update, not on save
 				} else {
 					// return errors to AJAX request
 					print(json_encode($input_errors));
@@ -312,16 +332,17 @@ if (!empty($action) && isset($gtype) && isset($rowid)) {
 	exit;
 }
 
-$pgtype = 'IP'; $l_pgtype = 'ip';
+$pgtype = 'IP';
 $pg_url = '/pfblockerng/pfblockerng_category.php?type=ipv4';
 
 if ($gtype == 'dnsbl') {
-	$pgtype = 'DNSBL'; $l_pgtype = 'dnsbl';
-	$pg_url = '/pfblockerng/pfblockerng_dnsbl.php';
+	$pgtype = 'DNS';
+	$pg_url = '/pfblockerng/pfblockerng_dns_general.php';
 }
 
 $pgtitle = array(gettext('Firewall'), gettext('pfBlockerNG'), gettext($pgtype), gettext($type));
 $pglinks = array('', '/pfblockerng/pfblockerng_general.php', "{$pg_url}", '@self');
+$shortcut_section = 'pfblockerng';
 
 include_once('head.inc');
 
@@ -329,15 +350,16 @@ include_once('head.inc');
 $get_req = pfb_alerts_default_page();
 
 $tab_array	= array();
-$tab_array[]	= array(gettext('General'),	false,			'/pfblockerng/pfblockerng_general.php');
+$tab_array[]	= array(gettext('General'),	FALSE,			'/pfblockerng/pfblockerng_general.php');
 $tab_array[]	= array(gettext('IP'),		$active['ip'],		'/pfblockerng/pfblockerng_ip.php');
-$tab_array[]	= array(gettext('DNSBL'),	$active['dnsbl'],	'/pfblockerng/pfblockerng_dnsbl.php');
-$tab_array[]	= array(gettext('Update'),	false,			'/pfblockerng/pfblockerng_update.php');
-$tab_array[]	= array(gettext('Reports'),	false,			"/pfblockerng/pfblockerng_alerts.php{$get_req}");
-$tab_array[]	= array(gettext('Feeds'),	false,			'/pfblockerng/pfblockerng_feeds.php');
-$tab_array[]	= array(gettext('Logs'),	false,			'/pfblockerng/pfblockerng_log.php');
-$tab_array[]	= array(gettext('Sync'),	false,			'/pfblockerng/pfblockerng_sync.php');
-display_top_tabs($tab_array, true);
+$tab_array[]	= array(gettext('DNS'),	$active['dnsbl'],	'/pfblockerng/pfblockerng_dns_general.php');
+$tab_array[]	= array(gettext('Update'),	FALSE,			'/pfblockerng/pfblockerng_update.php');
+$tab_array[]	= array(gettext('Reports'),	FALSE,			"/pfblockerng/pfblockerng_alerts.php{$get_req}");
+$tab_array[]	= array(gettext('Feeds'),	FALSE,			'/pfblockerng/pfblockerng_feeds.php');
+$tab_array[]	= array(gettext('Logs'),	FALSE,			'/pfblockerng/pfblockerng_log.php');
+$tab_array[]	= array(gettext('Sync'),	FALSE,			'/pfblockerng/pfblockerng_sync.php');
+pfb_software_add_tab($tab_array);
+display_top_tabs($tab_array, TRUE);
 
 $tab_array = array();
 
@@ -345,14 +367,18 @@ if ($gtype == 'ipv4' || $gtype == 'ipv6' || $gtype == 'geoip') {
 	$tab_array[]	= array(gettext('IPv4'),	$active['ipv4'],	'/pfblockerng/pfblockerng_category.php?type=ipv4');
 	$tab_array[]	= array(gettext('IPv6'),	$active['ipv6'],	'/pfblockerng/pfblockerng_category.php?type=ipv6');
 	$tab_array[]	= array(gettext('GeoIP'),	$active['geoip'],	'/pfblockerng/pfblockerng_category.php?type=geoip');
-	$tab_array[]	= array(gettext('Reputation'),	false,			'/pfblockerng/pfblockerng_reputation.php');
+	$tab_array[]	= array(gettext('Reputation'),	FALSE,			'/pfblockerng/pfblockerng_reputation.php');
 }
 else {
+	$tab_array[]	= array(gettext('General'),	FALSE,	'/pfblockerng/pfblockerng_dns_general.php');
+	$tab_array[]	= array(gettext('pfB-DNS'),	FALSE,	'/pfblockerng/pfblockerng_dns.php');
+	$tab_array[]	= array(gettext('DNSBL'),	FALSE,	'/pfblockerng/pfblockerng_dnsbl.php');
 	$tab_array[]	= array(gettext('DNSBL Groups'),	$active['dnsbl'],	'/pfblockerng/pfblockerng_category.php?type=dnsbl');
-	$tab_array[]	= array(gettext('DNSBL Category'),	false,			'/pfblockerng/pfblockerng_blacklist.php');
-	$tab_array[]	= array(gettext('DNSBL SafeSearch'),	false,			'/pfblockerng/pfblockerng_safesearch.php');
+	$tab_array[]	= array(gettext('DNSBL Category'),	FALSE,			'/pfblockerng/pfblockerng_blacklist.php');
+	$tab_array[]	= array(gettext('DNSBL SafeSearch'),	FALSE,			'/pfblockerng/pfblockerng_safesearch.php');
 }
-display_top_tabs($tab_array, true);
+display_top_tabs($tab_array, TRUE);
+pfb_print_pending_changes_box();
 
 if (isset($savemsg)) {
 	print_info_box($savemsg, 'success');
@@ -380,14 +406,18 @@ if (isset($savemsg)) {
 	<div id="<?=$pageid;?>" class="panel-body">
 
 		<?php
-			// Maxmind License Key verification
+			// issue #1497: read at 565, reachable only when $gtype == 'geoip' (same
+			// guard as below) -- but that guard is far enough away, across a table
+			// render loop, that PHPStan can't correlate the two.
+			$maxmind_verify = FALSE;
+			// Maxmind credential verification
 			if ($gtype == 'geoip') {
 				$maxmind_verify = TRUE;
-				if (empty($pfb['maxmind_key'])) {
+				$mmsg = pfb_maxmind_credential_notice($pfb['maxmind_key'], $pfb['maxmind_account']);
+				if ($mmsg !== '') {
 					$maxmind_verify = FALSE;
-					print_callout('<br /><p><strong>'
-							. 'MaxMind now requires a License Key! Review the IP tab: MaxMind settings for more information.'
-							. '</strong></p><br />', 'warning', '');
+					print_callout('<p><strong>' . $mmsg . '</strong><br />'
+						. '<a href="/pfblockerng/pfblockerng_ip.php">IP tab &mdash; MaxMind GeoIP configuration</a></p>', 'warning', '');
 				}
 			}
 		?>
@@ -408,19 +438,28 @@ if (isset($savemsg)) {
 						<th><?=gettext('Logging');?></th>
 					<?php endif; ?>
 					<th><!----- Buttons -----></th>
+					<?php if ($gtype != 'geoip'): ?>
+					<th><!----- Reorder -----></th>
+					<?php endif; ?>
 				</tr>
 			</thead>
 			<tbody>
 
-				<?php if (!empty($rowdata) && !empty($rowdata[0])):
+				<?php
+				// issue #1497: read at 594 ($r_id +1, the "Add" link). Both branches
+				// below provably assign it (foreach over a proven non-empty $rowdata,
+				// or the else's explicit -1); this default changes nothing at runtime.
+				$r_id = -1;
+				if (!empty($rowdata) && !empty($rowdata[0])):
 					foreach ($rowdata as $r_id => $row): ?>
 
-				<tr style="vertical-align: top" class="sortable" id="pfb_r<?=$r_id;?>">
+				<tr style="vertical-align: top"<?php if ($gtype != 'geoip'): ?> class="sortable"<?php endif; ?> id="pfb_r<?=$r_id;?>">
 					<td>
 					<?php
-						$row['aliasname'] = htmlspecialchars($row['aliasname']);
-						if (strlen($row['aliasname']) >= 20) {
-							print ("<p title=\"{$row['aliasname']}\">" . substr($row['aliasname'], 0, 15) . '...</p>');
+						$aliasname_raw = $row['aliasname'];
+						$row['aliasname'] = htmlspecialchars($aliasname_raw);
+						if (mb_strlen($aliasname_raw, 'UTF-8') >= 20) {
+							print ("<p title=\"{$row['aliasname']}\">" . htmlspecialchars(mb_substr($aliasname_raw, 0, 15, 'UTF-8')) . '...</p>');
 						} else {
 							print ($row['aliasname']);
 						}
@@ -429,9 +468,10 @@ if (isset($savemsg)) {
 
 					<td>
 					<?php
-						$row['description'] = htmlspecialchars($row['description']);
-						if (strlen($row['description']) >= 20) {
-							print ("<p title=\"{$row['description']}\">" . substr($row['description'], 0, 15) . '...</p>');
+						$description_raw = $row['description'];
+						$row['description'] = htmlspecialchars($description_raw);
+						if (mb_strlen($description_raw, 'UTF-8') >= 20) {
+							print ("<p title=\"{$row['description']}\">" . htmlspecialchars(mb_substr($description_raw, 0, 15, 'UTF-8')) . '...</p>');
 						} else {
 							print ($row['description']);
 						}
@@ -449,7 +489,10 @@ if (isset($savemsg)) {
 										'Alias_Deny' => 'Alias Deny', 'Alias_Permit' => 'Alias Permit',
 										'Alias_Match' => 'Alias Match', 'Alias_Native' => 'Alias Native' );
 						} else {
-							$list_array = array(	'Disabled' => 'Disabled', 'unbound' => 'Unbound' );
+							$list_array = array(	'Disabled' => 'Disabled', 'unbound' => 'Enable' );
+						}
+						if (!pfb_group_action_valid($rowdata[$r_id]['action'] ?? NULL, $gtype)) {
+							$rowdata[$r_id]['action'] = 'Disabled';
 						}
 
 						$selectadd = new Form_Select(
@@ -492,30 +535,24 @@ if (isset($savemsg)) {
 							$logtype = $rowdata[$r_id]['aliaslog'];
 						} else {
 							$field = 'logging-' . $r_id;
-							$logtype = $rowdata[$r_id]['logging'];
+							// issue #3288: ALWAYS the row's own normalized choice -- never
+							// substituted with the active global mechanism, or an unchanged
+							// bulk Save would silently erase every group's saved choice.
+							$logtype = pfb_dnsbl_group_logging($rowdata[$r_id]['logging'] ?? NULL, $pfb['dnsbl_policy_legacy']);
 						}
 
 						$log_error = '';
 						if ($gtype == 'dnsbl') {
-							if ($pfb['dnsbl_py_blacklist']) {
-								$log_options = ['enabled'	=> 'DNSBL WebServer/VIP',
-										'disabled'	=> 'Null Block (no logging)',
-										'disabled_log'	=> 'Null Block (logging)'];
-							} else {
-								$log_options = ['enabled'	=> 'DNSBL WebServer/VIP',
-										'disabled'	=> 'Null Block (no logging)'];
-							}
+							$log_options = ['default' => 'Default'] + pfb_dnsbl_mechanism_labels();
 
-							// Global DNSBL Logging/Blocking mode
-							if (!empty($pfb['dnsbl_global_log'])) {
-								if (!$pfb['dnsbl_py_blacklist'] && $pfb['dnsbl_global_log'] == 'disabled_log') {
-									$logtype		= 'enabled';
-									$log_error		= "Global Log 'Null Block (logging)' not available in Unbound Mode."
-												. " Re-configure Global Log option!";
-								} else {
-									$logtype		= $pfb['dnsbl_global_log'];
-									$log_options[$logtype]	= "{$log_options[$logtype]} (Global)";
-								}
+							// issue #3288: annotate the EFFECTIVE mechanism's label only --
+							// the SELECTED (and therefore submitted) $logtype above is never
+							// touched, so an unchanged bulk Save can never erase a saved choice.
+							if ($pfb['dnsbl_global_mode'] === PfbDnsblGlobalMode::Override) {
+								$active_mechanism = $pfb['dnsbl_global_log'];
+								$log_options[$active_mechanism] = "{$log_options[$active_mechanism]} (Override)";
+							} else {
+								$log_options['default'] = "Default ({$log_options[$pfb['dnsbl_global_log']]})";
 							}
 						}
 						else {
@@ -570,13 +607,13 @@ if (isset($savemsg)) {
 					</td>
 				</tr>
 					<?php endforeach; ?>
-				<?php else: $r_id = -1; ?>
+				<?php else: $r_id = -1; $group_name = $gtype == 'dnsbl' ? 'DNSBL group' : 'IP alias'; $group_names = $gtype == 'dnsbl' ? 'DNSBL groups' : 'IP aliases'; ?>
 
 				<tr>
 					<td>
-						No Alias/Groups are defined.
-						<br />Click <strong>Add</strong> to define a new Alias/Group.
-						<br /><br /><strong>Note</strong>: Pre-defined Alias/Groups are available in the Feeds Tab.
+						No <?=$group_names?> are defined.
+						<br />Click <strong>Add</strong> to define a new <?=$group_name?>.
+						<br /><br /><strong>Note</strong>: Pre-defined <?=$group_names?> are available on the <strong>Feeds</strong> tab.
 					</td>
 				</tr>
 				<?php endif; ?>
@@ -591,7 +628,7 @@ if (isset($savemsg)) {
 			<?=gettext('Add')?>
 		</a>
 		<?php endif; ?>
-		<button class="btn btn-sm btn-primary" type="button" id="btnsave" title="Save the page 'Order' format">
+		<button class="btn btn-sm btn-primary" type="button" id="btnsave" title="Save group settings and order">
 			<i class="fa-solid fa-save icon-embed-btn"></i>
 			<?=gettext('Save')?>
 		</button>&emsp;
@@ -601,26 +638,22 @@ if (isset($savemsg)) {
 <?php
 if ($gtype == 'geoip') {
 	print_callout('GeoIP database GeoLite2 distributed under the Creative Commons Attribution-ShareAlike 4.0 International License by:
-			<a target="_blank" href="https://www.maxmind.com">MaxMind Inc.</a><br /><br />
-			The GeoIP database is automatically updated each day at a random hour.<br /><br />
-
-			<span class="text-danger"><strong>Note:&emsp;</strong></span>
-			pfSense by default implicitly blocks all unsolicited inbound traffic to the WAN interface.<br />
-			Therefore adding GeoIP based firewall rules to the WAN will <strong>not</strong> provide any benefit, unless there are
-			open WAN ports.<br /><br />
-			Its also <strong>not</strong> recommended to block the "world", instead consider rules to "Permit" traffic to/from
-			selected Countries only.<br />
-			Also consider protecting just the specific open WAN ports and its just as important to protect the outbound LAN traffic.<br /><br />
-			Country ISOs can also be defined in the IPv4/6 Tabs (Refer to blue infoblocks for more details)<br /><br />
-			<strong>Setting changes are applied via CRON or \'Force Update|Reload\' only!</strong></p>');
+			<a target="_blank" rel="noopener noreferrer" href="https://www.maxmind.com">MaxMind Inc.</a>
+			<p>The GeoIP database is checked daily at <strong>Default Schedule</strong> on <strong>General</strong>.
+			MaxMind Account ID and License Key are configured on the
+			<a href="/pfblockerng/pfblockerng_ip.php">IP tab</a>
+			(MaxMind GeoIP configuration).</p>
+			<p><strong>Note:</strong> pfSense blocks unsolicited inbound WAN traffic by default, so GeoIP rules on WAN help only when WAN ports are open.
+			Do not block every country. Permit the countries you need, and also filter outbound LAN traffic, not only open WAN ports.</p>
+			<p>GeoIP country codes can also be set under <strong>Source Definitions</strong> on <strong>IPv4</strong> or <strong>IPv6</strong>, with <strong>Format</strong> set to <strong>GeoIP</strong>.</p>
+			<p>Saved changes are applied automatically at a schedule check, normally within 15 minutes while pfBlockerNG is enabled. If an <strong>Automatic Apply Window</strong> is set on <strong>General</strong>, changes wait for that window. To apply them now, open <strong>Update</strong> and use <strong>Run Now</strong>.</p>');
 }
 elseif ($gtype == 'dnsbl') {
-	print_callout('<p><strong>Setting changes are applied via CRON or \'Force Update|Reload\' only!</strong><br /><br />
-			DNSBL Category feeds are processed first, followed by the DNSBL Groups.<br />
-			DNSBL Groups can be prioritized first, by selecting the \'Group Order\' option.</p>');
+	print_callout('<p>Saved changes are applied automatically at a schedule check, normally within 15 minutes while pfBlockerNG is enabled. If an <strong>Automatic Apply Window</strong> is set on <strong>General</strong>, changes wait for that window. To apply them now, open <strong>Update</strong> and use <strong>Run Now</strong>.</p>
+			<p>DNSBL Category feeds are processed before DNSBL groups. To process a DNSBL group first, set its <strong>Group Order</strong> to <strong>Primary</strong>.</p>');
 }
 else {
-	print_callout('<p><strong>Setting changes are applied via CRON or \'Force Update|Reload\' only!</strong></p>');
+	print_callout('<p>Saved changes are applied automatically at a schedule check, normally within 15 minutes while pfBlockerNG is enabled. If an <strong>Automatic Apply Window</strong> is set on <strong>General</strong>, changes wait for that window. To apply them now, open <strong>Update</strong> and use <strong>Run Now</strong>.</p>');
 }
 ?>
 </form>
@@ -629,6 +662,9 @@ else {
 //<![CDATA[
 
 var pagetype = null;
+// ADR-63: mirrors system/webgui/roworderdragging -- OFF (default) keeps drag
+// enabled alongside anchor-click; ON restricts reordering to anchor-click only.
+var pfb_drag_enabled = <?=config_path_enabled('system/webgui', 'roworderdragging') ? 'false' : 'true';?>;
 
 function pfb_rownamedelete() {
 	if (confirm('Delete selected entry?')) {
@@ -643,7 +679,7 @@ events.push(function() {
 		if ($('#pfb_table table tbody').length == 0) {
 			var ids = '';
 		} else {
-			var ids = $('#pfb_table table tbody').sortable('serialize', {key:"ids[]"});
+			var ids = pfb_reorder_read_order('#pfb_table table tbody', 'tr.sortable');
 		}
 		var postdata = $('#iform').serialize();
 
@@ -684,19 +720,9 @@ events.push(function() {
 		}
 	}
 
-	// Move line (User mouse drag)
-	$('#pfb_table table tbody').sortable({
-		items: 'tr.sortable',
-		cursor: 'move',
-		distance: 10,
-		opacity: 0.8,
-		helper: function(e, ui) {
-			ui.children().each(function() {
-				$(this).width($(this).width());
-			});
-			return ui;
-			},
-	});
+	// Move line (User mouse drag) + anchor-click (issue #1147); drag stays
+	// gated by pfb_drag_enabled (system/webgui/roworderdragging).
+	pfb_reorder_init('#pfb_table table tbody', 'tr.sortable', null, pfb_drag_enabled);
 
 	$('#savemsg_json').hide();
 	$('#btnsave').click(function() {
@@ -707,5 +733,5 @@ events.push(function() {
 
 //]]>
 </script>
-<script src="pfBlockerNG.js" type="text/javascript"></script>
+<?=pfb_category_js_asset_render()?>
 <?php include('foot.inc');?>
