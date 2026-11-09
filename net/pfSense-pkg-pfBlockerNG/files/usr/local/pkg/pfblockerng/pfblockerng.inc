@@ -31,6 +31,9 @@ require_once('service-utils.inc');
 if (file_exists('/usr/local/pkg/pfblockerng/pfblockerng_extra.inc')) {
 	require_once('/usr/local/pkg/pfblockerng/pfblockerng_extra.inc');	// 'include functions' not yet merged into pfSense
 }
+if (file_exists('/usr/local/pkg/pfblockerng/pfblockerng_software.inc')) {
+	require_once('/usr/local/pkg/pfblockerng/pfblockerng_software.inc');	// issue #2360: ADR-19 Software tab + update-check backport
+}
 
 define('LOG_PREFIX_PKG_PFBLOCKERNG', 'pfBlockerNG');
 
@@ -932,6 +935,7 @@ function pfb_pkg_ver() {
 
 // Firewall Filter Service
 function pfb_filter_service() {
+	global $pfb;
 	$LOG_PREFIX_PKG_PFBLOCKERNG = LOG_PREFIX_PKG_PFBLOCKERNG;
 
 	$rc		= array();
@@ -987,6 +991,12 @@ function pfb_filter_service() {
 EOF;
 	$rc['stop']	= <<<EOF
 
+	# Ramdisk installs restore the combined alias archive at boot: write it when missing, bounded, never touching config
+	if [ ! -f '{$pfb['aliasarchive']}' ] &&
+	    [ "\$(/usr/local/sbin/read_xml_tag.sh boolean system/use_mfs_tmpvar)" = 'true' ]; then
+		/usr/bin/timeout -s TERM -k 5 60 /usr/local/bin/php -f /usr/local/pkg/pfblockerng/pfblockerng.inc aliastables_save >/dev/null 2>&1 || :
+	fi
+
 	# clog is not required for pfSense 2.5 and above
 	filter_type='tail_pfb'
 	if [ -e "/usr/local/sbin/clog_pfb" ]; then
@@ -1010,6 +1020,7 @@ EOF;
 
 // DNSBL Service
 function pfb_dnsbl_service() {
+	global $pfb;
 	$LOG_PREFIX_PKG_PFBLOCKERNG = LOG_PREFIX_PKG_PFBLOCKERNG;
 
 	$rc		= array();
@@ -1043,6 +1054,12 @@ function pfb_dnsbl_service() {
 
 EOF;
 	$rc['stop']	= <<<EOF
+
+	# Ramdisk installs restore the combined alias archive at boot: write it when missing, bounded, never touching config
+	if [ ! -f '{$pfb['aliasarchive']}' ] &&
+	    [ "\$(/usr/local/sbin/read_xml_tag.sh boolean system/use_mfs_tmpvar)" = 'true' ]; then
+		/usr/bin/timeout -s TERM -k 5 60 /usr/local/bin/php -f /usr/local/pkg/pfblockerng/pfblockerng.inc aliastables_save >/dev/null 2>&1 || :
+	fi
 
 	# Terminate DNSBL Lighttpd webserver, if found
 	/usr/bin/logger -p daemon.info -t lighttpd_pfb "INFO [{$LOG_PREFIX_PKG_PFBLOCKERNG}] DNSBL Webserver stopped"
@@ -1123,6 +1140,13 @@ if (isset($argv[1])) {
 			}
 			pfb_daemon_filterlog();
 			exit;
+	}
+
+	// Save the RAM-disk aliastables archive when missing (rc stop path); never writes config.
+	elseif ($argv[1] == 'aliastables_save') {
+			pfb_global();
+			pfb_aliastables('save');
+			exit(0);
 	}
 }
 
@@ -3180,24 +3204,91 @@ function tld_analysis() {
 	}
 }
 
-// Function to Start Unbound
+// issue #3055/#3094/#3100/#2879 (backported for #3292): the recovery budgets the
+// supervised stop/start and the bounded unbound-control IPC below run under. Same
+// values devel settled on -- no new operator setting.
+if (!defined('PFB_UNBOUND_STOP_FAILED')) {
+	// A stop refusal is not a broken unbound.conf; give callers a code to tell them apart.
+	define('PFB_UNBOUND_STOP_FAILED', -2);
+}
+if (!defined('PFB_UNBOUND_STOP_WAIT')) {
+	define('PFB_UNBOUND_STOP_WAIT', 30);
+}
+if (!defined('PFB_UNBOUND_KILL_WAIT')) {
+	define('PFB_UNBOUND_KILL_WAIT', 5);
+}
+if (!defined('PFB_UNBOUND_START_WAIT')) {
+	define('PFB_UNBOUND_START_WAIT', 30);
+}
+if (!defined('PFB_UNBOUND_START_SETUP_WAIT')) {
+	define('PFB_UNBOUND_START_SETUP_WAIT', 5);
+}
+if (!defined('PFB_HOOK_KILL_GRACE')) {
+	define('PFB_HOOK_KILL_GRACE', 5);
+}
+if (!defined('PFB_UNBOUND_START_CMD')) {
+	define('PFB_UNBOUND_START_CMD', '/usr/local/sbin/unbound -c /var/unbound/unbound.conf 2>&1');
+}
+if (!defined('PFB_UNBOUND_CONTROL_WAIT')) {
+	define('PFB_UNBOUND_CONTROL_WAIT', 30);
+}
+
+// Function to Start Unbound. issue #3292: backports the devel recovery contract --
+// bounded TERM/KILL stop escalation (refuse a second start while the old daemon
+// survives both), PID-first stop with a name-based fallback when the pidfile is
+// missing/stale, and a supervised start that lets a real daemon detach into its own
+// session while a stuck launcher or ordinary helper is reaped. $final['start_completed']
+// is TRUE only once a start command has actually run to completion; pfb_reload_unbound()
+// uses it together with retval to tell a genuine config failure apart from a stop
+// refusal, a launch/staging failure, or an expiry. See
+// docs/misc/external-process-waits.md "Mixed survivor + transient tree".
 function pfb_stop_start_unbound($type) {
 	global $g, $pfb;
 
-	$final = array();
-	if (file_exists("{$g['varrun_path']}/unbound.pid")) {
+	$final = array('start_completed' => FALSE);
+	$pidfile = "{$g['varrun_path']}/unbound.pid";
+	$term_by_name = !isvalidpid($pidfile);
+	if (!$term_by_name) {
 		pfb_logger("\nStopping Unbound Resolver", 1);
-		sigkillbypid("{$g['varrun_path']}/unbound.pid", 'TERM');
+		sigkillbypid($pidfile, 'TERM');
 	}
 
-	// If unbound is still running, wait up to 30 seconds for it to terminate.
-	for ($i=1; $i <= 30; $i++) {
+	// If unbound is still running, wait up to PFB_UNBOUND_STOP_WAIT seconds for it to terminate.
+	for ($i=1; $i <= PFB_UNBOUND_STOP_WAIT; $i++) {
 		if (is_process_running('unbound')) {
+			if ($term_by_name) {
+				pfb_logger("\nStopping Unbound Resolver", 1);
+				sigkillbyname('unbound', 'TERM');
+				$term_by_name = FALSE;
+			}
 			pfb_logger('.', 1);
 			sleep(1);
 		} else {
 			pfb_logger("\nUnbound stopped in {$i} sec.", 1);
 			break;
+		}
+	}
+
+	// A large DNSBL can keep Unbound inside pythonmod init past the wait above --
+	// starting anyway would double-bind :53, so escalate to KILL and refuse a second
+	// start if the old process still survives that too.
+	if (is_process_running('unbound')) {
+		pfb_logger("\nUnbound did not stop in " . PFB_UNBOUND_STOP_WAIT .
+			" sec; escalating to KILL", 2);
+		sigkillbyname('unbound', 'KILL');
+		for ($i=1; $i <= PFB_UNBOUND_KILL_WAIT; $i++) {
+			if (!is_process_running('unbound')) {
+				pfb_logger("\nUnbound killed after {$i} sec.", 2);
+				break;
+			}
+			sleep(1);
+		}
+		if (is_process_running('unbound')) {
+			$final['result'] = array('Unbound could not be stopped; Resolver not restarted');
+			$final['retval'] = PFB_UNBOUND_STOP_FAILED;
+			pfb_logger("\nUnbound still running after TERM and KILL; not starting a " .
+				"second instance. Resolver NOT restarted", 2);
+			return $final;
 		}
 	}
 
@@ -3215,8 +3306,319 @@ function pfb_stop_start_unbound($type) {
 	}
 
 	pfb_logger("\nStarting Unbound Resolver", 1);
-	exec("/usr/local/sbin/unbound -c /var/unbound/unbound.conf 2>&1", $final['result'], $final['retval']);
+	$outfile = @tempnam(sys_get_temp_dir(), 'pfbus');
+	if ($outfile === FALSE) {
+		$final['result'] = array('could not stage Unbound start output');
+		$final['retval'] = -1;
+		pfb_logger("\nUnbound Resolver start could not stage output; not run", 2);
+		return $final;
+	}
+
+	$ready = "{$outfile}.ready";
+	$release = "{$outfile}.release";
+	$command_started = "{$outfile}.started";
+	$done = "{$outfile}.done";
+	$proc = NULL;
+	$pid = 0;
+	$group_ready = FALSE;
+	$retval = NULL;
+	$failure = '';
+	$expired = FALSE;
+	$start_ack_deadline = NULL;
+	$deadline = NULL;
+
+	// issue #3663: KILL only queues the signal; wait (one more grace at most) until the
+	// killed members have exited and been reaped, and log any that outlast it.
+	$await_group_gone = static function (int $pid): void {
+		$deadline = hrtime(TRUE) + (PFB_HOOK_KILL_GRACE * 1000000000);
+		while (@posix_kill(-$pid, 0)) {
+			if (hrtime(TRUE) >= $deadline) {
+				pfb_logger("\nUnbound start process group {$pid} still present " .
+					PFB_HOOK_KILL_GRACE . 's after KILL', 2);
+				return;
+			}
+			usleep(10000);
+		}
+	};
+
+	// A successful Unbound daemon creates its own session and leaves this group.
+	// Any ordinary helper stays with the launcher, so expiry can reap the whole tree.
+	$stop_group = static function (&$proc, int $pid, bool $group_ready) use ($await_group_gone): void {
+		if (!is_resource($proc) || $pid <= 0) {
+			return;
+		}
+		if ($group_ready) {
+			@posix_kill(-$pid, 15);
+		} else {
+			@proc_terminate($proc, 15);
+		}
+
+		$grace_deadline = hrtime(TRUE) + (PFB_HOOK_KILL_GRACE * 1000000000);
+		while (is_resource($proc) && hrtime(TRUE) < $grace_deadline) {
+			$status = @proc_get_status($proc);
+			if (!is_array($status) || !$status['running']) {
+				@proc_close($proc);
+				$proc = NULL;
+				break;
+			}
+			usleep(10000);
+		}
+		if (is_resource($proc)) {
+			if ($group_ready) {
+				@posix_kill(-$pid, 9);
+			}
+			@proc_terminate($proc, 9);
+			@proc_close($proc);
+			$proc = NULL;
+			$await_group_gone($pid);
+			return;
+		}
+
+		// Once the group leader is reaped, a still-live group is made solely of
+		// descendants; wait out their TERM grace, then kill any that ignored it.
+		if (!$group_ready || !@posix_kill(-$pid, 0)) {
+			return;
+		}
+		while (hrtime(TRUE) < $grace_deadline) {
+			if (!@posix_kill(-$pid, 0)) {
+				return;
+			}
+			usleep(10000);
+		}
+		@posix_kill(-$pid, 9);
+		$await_group_gone($pid);
+	};
+
+	try {
+		foreach (array('proc_open', 'proc_get_status', 'posix_setpgid', 'posix_getpgid', 'posix_kill') as $required) {
+			if (!function_exists($required)) {
+				throw new RuntimeException("{$required}() unavailable; Unbound start not run");
+			}
+		}
+
+		// The child establishes its own process group, publishes readiness, then waits
+		// for the parent to verify that group before executing the configured command.
+		$launcher_code =
+			'if (!posix_setpgid(0, 0)) { exit(126); } ' .
+			'$pid = getmypid(); putenv("PFB_UNBOUND_START_PGID={$pid}"); ' .
+			'$ready_tmp = $argv[1] . ".new"; ' .
+			'if (@file_put_contents($ready_tmp, (string) $pid) === FALSE || ' .
+			'!@rename($ready_tmp, $argv[1])) { exit(126); } ' .
+			'$barrier_deadline = hrtime(TRUE) + ((int) $argv[4] * 1000000000); ' .
+			'while (!file_exists($argv[2])) { ' .
+			'if (hrtime(TRUE) >= $barrier_deadline) { exit(125); } usleep(1000); } ' .
+			'$started_tmp = $argv[5] . ".new"; ' .
+			'if (@file_put_contents($started_tmp, "1") === FALSE || ' .
+			'!@rename($started_tmp, $argv[5])) { exit(126); } ' .
+			'passthru($argv[3], $status); ' .
+			'$done_tmp = $argv[6] . ".new"; ' .
+			'if (@file_put_contents($done_tmp, (string) $status) === FALSE || ' .
+			'!@rename($done_tmp, $argv[6])) { exit(126); } ' .
+			'$linger_deadline = hrtime(TRUE) + ((int) $argv[4] * 1000000000); ' .
+			'while (hrtime(TRUE) < $linger_deadline) { usleep(10000); } exit($status);';
+		$descriptors = array(
+			0 => array('file', '/dev/null', 'r'),
+			1 => array('file', $outfile, 'a'),
+			2 => array('file', $outfile, 'a'),
+		);
+		$pipes = array();
+		// issue #3292: the CLI PHP path, never PHP_BINARY -- under a pfSense web
+		// request PHP_BINARY names php-cgi, which rejects the CLI-only -r option.
+		$php_cli = (string) ($pfb['php'] ?? (PHP_BINDIR . '/php'));
+		$setup_deadline = hrtime(TRUE) + (PFB_UNBOUND_START_SETUP_WAIT * 1000000000);
+		$proc = @proc_open(array(
+			$php_cli,
+			'-r',
+			$launcher_code,
+			'--',
+			$ready,
+			$release,
+			PFB_UNBOUND_START_CMD,
+			(string) (PFB_UNBOUND_START_SETUP_WAIT + PFB_HOOK_KILL_GRACE),
+			$command_started,
+			$done,
+		), $descriptors, $pipes);
+		if (!is_resource($proc)) {
+			throw new RuntimeException('could not launch supervised Unbound start');
+		}
+
+		$status = proc_get_status($proc);
+		$pid = (int) $status['pid'];
+		while (!file_exists($ready)) {
+			$status = proc_get_status($proc);
+			if (!$status['running']) {
+				$retval = (int) $status['exitcode'];
+				break;
+			}
+			if (hrtime(TRUE) >= $setup_deadline) {
+				$failure = 'Unbound start process-group setup TIMED OUT after ' .
+					PFB_UNBOUND_START_SETUP_WAIT . 's; not run';
+				break;
+			}
+			usleep(1000);
+		}
+
+		if ($retval === NULL && $failure === '' && file_exists($ready)) {
+			$published_pid = (int) trim((string) @file_get_contents($ready));
+			$group_ready = @posix_getpgid($pid) === $pid;
+			if ($published_pid !== $pid || !$group_ready) {
+				$failure = 'Unbound start process-group barrier verification failed';
+			} elseif (!@touch($release)) {
+				$failure = 'Unbound start process-group barrier release failed';
+			} else {
+				$start_ack_deadline = hrtime(TRUE) + (PFB_UNBOUND_START_SETUP_WAIT * 1000000000);
+			}
+		}
+
+		while ($retval === NULL && $failure === '' && !file_exists($command_started)) {
+			if ($start_ack_deadline === NULL) {
+				$failure = 'Unbound command-start acknowledgement deadline not armed';
+				break;
+			}
+			$status = proc_get_status($proc);
+			if (!$status['running']) {
+				$retval = (int) $status['exitcode'];
+				break;
+			}
+			if (hrtime(TRUE) >= $start_ack_deadline) {
+				$failure = 'Unbound command-start acknowledgement TIMED OUT after ' .
+					PFB_UNBOUND_START_SETUP_WAIT . 's; not run';
+				break;
+			}
+			usleep(1000);
+		}
+		if ($retval === NULL && $failure === '' && file_exists($command_started)) {
+			$deadline = hrtime(TRUE) + (PFB_UNBOUND_START_WAIT * 1000000000);
+		}
+
+		while ($retval === NULL && !$expired && $failure === '' && !file_exists($done)) {
+			if ($deadline === NULL) {
+				$failure = 'Unbound start deadline not armed';
+				break;
+			}
+			$status = proc_get_status($proc);
+			if (!$status['running']) {
+				$retval = (int) $status['exitcode'];
+				break;
+			}
+			if (hrtime(TRUE) >= $deadline) {
+				$expired = TRUE;
+				break;
+			}
+			usleep(10000);
+		}
+		if ($retval === NULL && !$expired && $failure === '' && file_exists($done)) {
+			$done_status = trim((string) @file_get_contents($done));
+			if (preg_match('/^[0-9]+$/D', $done_status) !== 1) {
+				$failure = 'Unbound start completion status invalid';
+			} else {
+				$retval = (int) $done_status;
+				$final['start_completed'] = TRUE;
+			}
+		}
+
+		if (!$final['start_completed'] && $retval === 0 && $failure === '') {
+			$failure = 'Unbound start supervisor exited without a valid completion status';
+		}
+		if ($expired) {
+			$group_ready = $group_ready || @posix_getpgid($pid) === $pid;
+			$stop_group($proc, $pid, $group_ready);
+			$retval = 124;
+		} elseif ($failure !== '') {
+			$group_ready = $group_ready || @posix_getpgid($pid) === $pid;
+			$stop_group($proc, $pid, $group_ready);
+			$retval = -1;
+		} elseif ($group_ready) {
+			// Reap the supervisor and any completed command's non-daemon helpers.
+			$stop_group($proc, $pid, TRUE);
+		} elseif (is_resource($proc)) {
+			@proc_close($proc);
+			$proc = NULL;
+		}
+	} catch (Throwable $error) {
+		$failure = $error->getMessage();
+		$retval = -1;
+	} finally {
+		if (is_resource($proc)) {
+			$group_ready = $group_ready || ($pid > 0 && @posix_getpgid($pid) === $pid);
+			$stop_group($proc, $pid, $group_ready);
+		}
+		$raw = (string) @file_get_contents($outfile);
+		@unlink("{$done}.new");
+		@unlink($done);
+		@unlink($release);
+		@unlink("{$command_started}.new");
+		@unlink($command_started);
+		@unlink("{$ready}.new");
+		@unlink($ready);
+		@unlink($outfile);
+	}
+
+	if ($failure !== '') {
+		$raw .= ($raw !== '' && !str_ends_with($raw, "\n") ? "\n" : '') . "{$failure}\n";
+		pfb_logger("\n{$failure}", 2);
+	}
+	$final['result'] = ($raw === '') ? array() : explode("\n", $raw);
+	if (end($final['result']) === '') {
+		array_pop($final['result']);
+	}
+	$final['retval'] = (int) ($retval ?? -1);
+
+	if ($final['retval'] === 124 && !$final['start_completed']) {
+		pfb_logger("\nUnbound Resolver start TIMED OUT after " . PFB_UNBOUND_START_WAIT .
+			"s and was killed", 2);
+	}
 	return $final;
+}
+
+
+/*
+ * issue #2879 (backported for #3292): wrap one composed unbound-control command in the
+ * bounded-wait seam. timeout(1) stays in its DEFAULT (reaper) mode: unbound-control is a
+ * transient request/response helper spawned through chroot(8), so an expiry must kill the
+ * whole tree -- --foreground would signal chroot alone and orphan a blocked
+ * unbound-control. $cmd arrives complete, redirections included, and is never re-quoted
+ * here; $budget clips the deadline and is floored at one second so a degenerate value
+ * cannot disable the bound.
+ */
+function pfb_unbound_control_cmd(string $cmd, ?int $budget = NULL): string {
+	global $pfb;
+
+	$timeout_esc = escapeshellarg($pfb['timeout'] ?? '/usr/bin/timeout');
+
+	return "{$timeout_esc} -s TERM -k " . PFB_HOOK_KILL_GRACE . ' ' .
+		max(1, $budget ?? PFB_UNBOUND_CONTROL_WAIT) . " {$cmd}";
+}
+
+/*
+ * issue #2879 (backported for #3292): run one bounded control command and NAME what
+ * happened. Returns 124 when the deadline expired (killed), -1 when the wrapper never
+ * launched, else the control command's own exit status -- so an expiry is never conflated
+ * with a non-zero reply, and neither is ever read as success. $lines is handed straight to
+ * exec(), preserving its append-to-an-existing-array contract. $log_nonzero is FALSE for a
+ * site that reports the command's own output itself.
+ */
+function pfb_unbound_control_exec(string $cmd, string $label, ?array &$lines = NULL,
+	bool $log_nonzero = TRUE, ?int $budget = NULL): int {
+
+	$secs   = max(1, $budget ?? PFB_UNBOUND_CONTROL_WAIT);
+	$status = 0;
+	if (exec(pfb_unbound_control_cmd($cmd, $secs), $lines, $status) === FALSE && $status === 0) {
+		// exec() itself failed to launch (fork/pipe).
+		$status = -1;
+	}
+
+	if ($status === 124) {
+		pfb_logger("\nUnbound control [ {$label} ] TIMED OUT after {$secs}s and was killed", 2);
+	}
+	elseif ($status === -1) {
+		pfb_logger("\nUnbound control [ {$label} ] could not be run", 2);
+	}
+	elseif ($status !== 0 && $log_nonzero) {
+		pfb_logger("\nUnbound control [ {$label} ] FAILED (exit {$status})", 2);
+	}
+
+	return $status;
 }
 
 
@@ -3235,13 +3637,22 @@ function pfb_reload_unbound($mode, $cache=FALSE, $pfbpython=FALSE) {
 	}
 
 	$cache_dumpfile = tempnam('/var/tmp/', 'unbound_cache_');
+	$cache_dump_valid = FALSE;
 	if ($mode == 'enabled' && is_process_running('unbound') && !$pfb['dnsbl_python_unmount'] && !$pfbpython) {
 
 		$log = "\nReloading Unbound Resolver{$type}";
 		pfb_logger($log, 1);
 
 		if ($cache && $pfb['dnsbl_res_cache'] == 'on') {
-			exec("{$pfb['chroot_cmd']} dump_cache > " . escapeshellarg($cache_dumpfile) . " 2>&1");
+			// issue #2879 (backported for #3292): an expired or refused dump leaves a
+			// truncated cache (or a control error message) in the file -- discard it so
+			// the restore below cannot load a partial dump into the fresh resolver.
+			$dumped = pfb_unbound_control_exec("{$pfb['chroot_cmd']} dump_cache > " .
+				escapeshellarg($cache_dumpfile) . ' 2>&1 < /dev/null', 'dump_cache');
+			$cache_dump_valid = ($dumped === 0);
+			if ($dumped !== 0 && is_string($cache_dumpfile)) {
+				@file_put_contents($cache_dumpfile, '');
+			}
 			pfb_logger('.', 1);
 		}
 	}
@@ -3249,7 +3660,23 @@ function pfb_reload_unbound($mode, $cache=FALSE, $pfbpython=FALSE) {
 	$final = pfb_stop_start_unbound($type);
 	pfb_logger('.', 1);
 
-	if ($final['retval'] != 0) {
+	// issue #3094/#3100 (backported for #3292): a refused stop, a start timeout, or an
+	// incomplete start are not a bad unbound.conf -- only a genuinely COMPLETED start
+	// that still returned non-zero is eligible for the existing config
+	// quarantine/rollback/retry below.
+	if ($final['retval'] === PFB_UNBOUND_STOP_FAILED) {
+		pfb_logger("\nDNSBL {$mode} FAIL  *** Resolver could not be stopped; " .
+			"config left unchanged ***\n", 2);
+	}
+	elseif ($final['retval'] === 124) {
+		pfb_logger("\nDNSBL {$mode} FAIL  *** Resolver start timed out or returned status 124; " .
+			"config left unchanged ***\n", 2);
+	}
+	elseif (!$final['start_completed']) {
+		pfb_logger("\nDNSBL {$mode} FAIL  *** Resolver start did not complete; " .
+			"config left unchanged ***\n", 2);
+	}
+	elseif ($final['retval'] != 0) {
 
 		@copy("{$pfb['dnsbldir']}/unbound.conf", "{$pfb['dnsbldir']}/unbound.conf.error");
 		if ($mode == 'enabled') {
@@ -3291,25 +3718,31 @@ function pfb_reload_unbound($mode, $cache=FALSE, $pfbpython=FALSE) {
 		$final = pfb_stop_start_unbound($type);
 	}
 
-	// Confirm that Resolver is running
-	if (is_process_running('unbound')) {
+	// Confirm service health only after a successful completed start; do not let
+	// a failed attempt borrow another process's status. This is not per-run PID
+	// ownership: independent service restarts may race with this health check.
+	if ($final['start_completed'] && $final['retval'] === 0 && is_process_running('unbound')) {
 		pfb_logger('.', 1);
 
-		// $final['result'] will be appended with previous result above
-		exec("{$pfb['chroot_cmd']} status 2>&1", $final['result'], $final['retval']);
+		$status_result = array();
+		$status_retval = pfb_unbound_control_exec("{$pfb['chroot_cmd']} status 2>&1 < /dev/null",
+			'status', $status_result);
 		pfb_logger('.', 1);
-		if (preg_grep("/is running.../", $final['result'])) {
+		if ($status_retval === 0 && preg_grep("/is running.../", $status_result)) {
 			pfb_logger(" completed [ NOW ]", 1);
 
 			// Restore Resolver cache
-			if ($cache && $pfb['dnsbl_res_cache'] == 'on' && file_exists($cache_dumpfile) && filesize($cache_dumpfile) > 0) {
-				exec("{$pfb['chroot_cmd']} load_cache < " . escapeshellarg($cache_dumpfile) . " 2>&1");
-				$log = "\nResolver cache restored [ NOW ]";
-				pfb_logger($log, 1);
+			if ($cache && $pfb['dnsbl_res_cache'] == 'on' && $cache_dump_valid && file_exists($cache_dumpfile) && filesize($cache_dumpfile) > 0) {
+				$restored = pfb_unbound_control_exec("{$pfb['chroot_cmd']} load_cache < " .
+					escapeshellarg($cache_dumpfile) . ' 2>&1', 'load_cache');
+				if ($restored === 0) {
+					$log = "\nResolver cache restored [ NOW ]";
+					pfb_logger($log, 1);
+				}
 			}
 		}
 		else {
-			$log = htmlspecialchars(implode("\n", $final['result']));
+			$log = htmlspecialchars(implode("\n", $status_result));
 			pfb_logger(" Not completed. [ NOW ]\n{$log}\n", 1);
 		}
 	}
@@ -3898,7 +4331,11 @@ function pfb_download($list_url, $file_dwn, $pflex=FALSE, $header, $format, $log
 				curl_setopt_array($ch, $pfb['curl_defaults']);	// Load curl default settings
 				curl_setopt($ch, CURLOPT_FILE, $fhandle);	// Add $fhandle setting to cURL
 				curl_setopt($ch, CURLOPT_TIMEOUT, $timeout);	// Set cURL download timeout
-				curl_setopt($ch, CURLOPT_ENCODING, 'gzip');	// Request 'gzip' encoding from server if available
+				// No Accept-Encoding is offered: an origin that labels an archive
+				// 'Content-Encoding: gzip' would otherwise have libcurl decode it in
+				// flight, leaving the inner bytes on disk and the archive unextracted.
+				// Text feeds therefore transfer uncompressed; do not re-add the offer
+				// without solving that first.
 				if ($srcint) {
 					curl_setopt($ch, CURLOPT_INTERFACE, $srcint);	// Use a specific interface when downloading lists
 					pfb_logger("\nList: {$header} will be downloaded via interface: {$srcint}\n", 1);
@@ -4384,7 +4821,10 @@ function pfb_firewall_rule($action, $pfb_alias, $vtype, $pfb_log, $agateway_in='
 
 	global $pfb;
 	$rule = array();
+	$rule_out = null;
 
+	// issue #3382: a floating rule matches on the interface traffic ENTERS, so every floating
+	// auto-rule is direction 'in', outbound ones included (a floating 'out' never saw client egress).
 	switch ($action) {
 		case 'Deny_Both':
 		case 'Deny_Outbound':
@@ -4394,7 +4834,7 @@ function pfb_firewall_rule($action, $pfb_alias, $vtype, $pfb_log, $agateway_in='
 				$rule['ipprotocol'] = 'inet6';
 			}
 			if ($pfb['float'] == 'on') {
-				$rule['direction'] = 'any';
+				$rule['direction'] = 'in';
 			}
 			$rule['descr'] = "{$pfb_alias}{$pfb['suffix']}";
 			if (!empty($asrc_out)) {
@@ -4421,12 +4861,10 @@ function pfb_firewall_rule($action, $pfb_alias, $vtype, $pfb_log, $agateway_in='
 			}
 			if (!empty($agateway_out) && $agateway_out != 'default') {
 				$rule['gateway'] = "{$agateway_out}";
-				if ($pfb['float'] == 'on') {
-					$rule['direction'] = 'out';
-				}
 			}
 			$rule['created'] = array('time' => (int)microtime(true), 'username' => 'Auto');
 			$pfb['deny_outbound'][] = $rule;
+			$rule_out = $rule;
 			if ($action != 'Deny_Both') {
 				break;
 			}
@@ -4437,7 +4875,7 @@ function pfb_firewall_rule($action, $pfb_alias, $vtype, $pfb_log, $agateway_in='
 				$rule['ipprotocol'] = 'inet6';
 			}
 			if ($pfb['float'] == 'on') {
-				$rule['direction'] = 'any';
+				$rule['direction'] = 'in';
 			}
 			$rule['descr'] = "{$pfb_alias}{$pfb['suffix']}";
 			$rule['source'] = array('address' => "{$pfb_alias}");
@@ -4464,9 +4902,6 @@ function pfb_firewall_rule($action, $pfb_alias, $vtype, $pfb_log, $agateway_in='
 			}
 			if (!empty($agateway_in) && $agateway_in != 'default') {
 				$rule['gateway'] = "{$agateway_in}";
-				if ($pfb['float'] == 'on') {
-					$rule['direction'] = 'in';
-				}
 			}
 			$rule['created'] = array('time' => (int)microtime(true), 'username' => 'Auto');
 			$pfb['deny_inbound'][] = $rule;
@@ -4479,7 +4914,7 @@ function pfb_firewall_rule($action, $pfb_alias, $vtype, $pfb_log, $agateway_in='
 				$rule['ipprotocol'] = 'inet6';
 			}
 			if ($pfb['float'] == 'on') {
-				$rule['direction'] = 'any';
+				$rule['direction'] = 'in';
 			}
 			$rule['descr'] = "{$pfb_alias}{$pfb['suffix']}";
 			if (!empty($asrc_out)) {
@@ -4506,12 +4941,10 @@ function pfb_firewall_rule($action, $pfb_alias, $vtype, $pfb_log, $agateway_in='
 			}
 			if (!empty($agateway_out) && $agateway_out != 'default') {
 				$rule['gateway'] = "{$agateway_out}";
-				if ($pfb['float'] == 'on') {
-					$rule['direction'] = 'out';
-				}
 			}
 			$rule['created'] = array('time' => (int)microtime(true), 'username' => 'Auto');
 			$pfb['permit_outbound'][] = $rule;
+			$rule_out = $rule;
 			if ($action != 'Permit_Both') {
 				break;
 			}
@@ -4522,7 +4955,7 @@ function pfb_firewall_rule($action, $pfb_alias, $vtype, $pfb_log, $agateway_in='
 				$rule['ipprotocol'] = 'inet6';
 			}
 			if ($pfb['float'] == 'on') {
-				$rule['direction'] = 'any';
+				$rule['direction'] = 'in';
 			}
 			$rule['descr'] = "{$pfb_alias}{$pfb['suffix']}";
 			$rule['source'] = array('address' => "{$pfb_alias}");
@@ -4549,9 +4982,6 @@ function pfb_firewall_rule($action, $pfb_alias, $vtype, $pfb_log, $agateway_in='
 			}
 			if (!empty($agateway_in) && $agateway_in != 'default') {
 				$rule['gateway'] = "{$agateway_in}";
-				if ($pfb['float'] == 'on') {
-					$rule['direction'] = 'in';
-				}
 			}
 			$rule['created'] = array('time' => (int)microtime(true), 'username' => 'Auto');
 			$pfb['permit_inbound'][] = $rule;
@@ -4564,7 +4994,7 @@ function pfb_firewall_rule($action, $pfb_alias, $vtype, $pfb_log, $agateway_in='
 			if ($vtype == '_v6') {
 				$rule['ipprotocol'] = 'inet6';
 			}
-			$rule['direction'] = 'any';
+			$rule['direction'] = 'in';
 			$rule['descr'] = "{$pfb_alias}{$pfb['suffix']}";
 			if (!empty($asrc_out)) {
 				$rule['source'] = array('address' => "{$asrc_out}");
@@ -4590,10 +5020,10 @@ function pfb_firewall_rule($action, $pfb_alias, $vtype, $pfb_log, $agateway_in='
 			}
 			if (!empty($agateway_out) && $agateway_out != 'default') {
 				$rule['gateway'] = "{$agateway_out}";
-				$rule['direction'] = 'out';
 			}
 			$rule['created'] = array('time' => (int)microtime(true), 'username' => 'Auto');
 			$pfb['match_outbound'][] = $rule;
+			$rule_out = $rule;
 			if ($action != 'Match_Both') {
 				break;
 			}
@@ -4604,7 +5034,7 @@ function pfb_firewall_rule($action, $pfb_alias, $vtype, $pfb_log, $agateway_in='
 			if ($vtype == '_v6') {
 				$rule['ipprotocol'] = 'inet6';
 			}
-			$rule['direction'] = 'any';
+			$rule['direction'] = 'in';
 			$rule['descr'] = "{$pfb_alias}{$pfb['suffix']}";
 			$rule['source'] = array('address' => "{$pfb_alias}");
 			if ($aaddrnot_in == 'on') {
@@ -4630,11 +5060,28 @@ function pfb_firewall_rule($action, $pfb_alias, $vtype, $pfb_log, $agateway_in='
 			}
 			if (!empty($agateway_in) && $agateway_in != 'default') {
 				$rule['gateway'] = "{$agateway_in}";
-				$rule['direction'] = 'in';
 			}
 			$rule['created'] = array('time' => (int)microtime(true), 'username' => 'Auto');
 			$pfb['match_inbound'][] = $rule;
 			break;
+	}
+
+	// issue #3382 (opt-in): locally originated packets never ENTER an interface, so the client rule
+	// cannot see them. Twin = floating 'out' rule from (self); no Custom Source, no gateway (route-to).
+	if ($rule_out !== null && $pfb['fw_self'] == 'on' && empty($asrc_out)) {
+		$twin = array_merge($pfb['base_rule_float'], array_intersect_key($rule_out,
+		    array_flip(array('type', 'ipprotocol', 'descr', 'destination', 'protocol', 'log', 'created'))));
+		$twin['direction'] = 'out';
+		$twin['source']    = array('network' => '(self)');
+		if ($twin['type'] == 'match') {
+			unset($twin['quick']);
+		}
+		$bucket = match ($twin['type']) {
+			'pass'  => 'permit_self',
+			'match' => 'match_self',
+			default => 'deny_self',
+		};
+		$pfb[$bucket][] = $twin;
 	}
 	return;
 }
@@ -4650,14 +5097,19 @@ function pfb_aliastables($mode) {
 	// Reload config.xml to get any recent changes
 	config_read_file(false, true);
 
+	// Stop-time save fills only a missing archive on a RAM-disk install and never touches config.
+	if ($mode == 'save' && (!config_path_enabled('system', 'use_mfs_tmpvar') || file_exists($pfb['aliasarchive']))) {
+		return;
+	}
+
 	$a_earlyshellcmd = config_get_path('system/earlyshellcmd', []);
 	$a_shellcmdsettings = config_get_path('installedpackages/shellcmdsettings/config', []);
 
 	// Only execute function if Ramdisks are used.
 	if (config_path_enabled('system', 'use_mfs_tmpvar')) {
 
-		// Archive aliastable folder
-		if ($mode == 'update') {
+		// Archive aliastable folder: update always refreshes; conf and save only fill a missing archive
+		if ($mode == 'update' || !file_exists($pfb['aliasarchive'])) {
 			pfb_logger("\nArchiving Aliastable folder", 1);
 
 			$files_to_backup = '';
@@ -4668,15 +5120,30 @@ function pfb_aliastables($mode) {
 
 			// Archive IP Aliastables/Unbound DNSBL Database as required.
 			if (!empty($files_to_backup)) {
-				exec("/usr/bin/tar -jcvf {$pfb['aliasarchive']} {$files_to_backup} >/dev/null 2>&1");
-				pfb_logger("\nArchiving selected pfBlockerNG files.\n", 1);
+				// Build beside the destination and rename on success, so a failed tar never replaces a good archive.
+				$archive_dir = dirname($pfb['aliasarchive']);
+				$tmp = is_dir($archive_dir) ? tempnam($archive_dir, 'aliastables.') : FALSE;
+				if ($tmp === FALSE) {
+					pfb_logger("\nAliastables archive not written: no temporary file in {$archive_dir}.\n", 1);
+				} else {
+					$cleanup = escapeshellarg('rm -f -- ' . escapeshellarg($tmp) . '; exit 143');
+					exec("trap {$cleanup} HUP INT TERM; /usr/bin/tar -jcvf " . escapeshellarg($tmp) . " {$files_to_backup} >/dev/null 2>&1", $tar_output, $status);
+					if ($status !== 0) {
+						pfb_logger("\nAliastables archive not updated: tar exited {$status}, previous archive kept.\n", 1);
+					} elseif (@rename($tmp, $pfb['aliasarchive'])) {
+						pfb_logger("\nArchiving selected pfBlockerNG files.\n", 1);
+					} else {
+						pfb_logger("\nAliastables archive not updated: could not replace {$pfb['aliasarchive']}.\n", 1);
+					}
+					@unlink($tmp);
+				}
 			} else {
 				pfb_logger("\nNo Files to archive.\n", 1);
 			}
 		}
 
 		// Check conf file for earlyshellcmd/shellcmd package settings
-		elseif ($mode == 'conf') {
+		if ($mode == 'conf') {
 
 			// Add earlyshellcmd settings
 			if (!empty($a_earlyshellcmd)) {
@@ -7008,6 +7475,7 @@ function sync_package_pfblockerng($cron='') {
 	$pfb['deny_action_outbound'] = $pfb['ipconfig']['outbound_deny_action']	?: 'reject';
 
 	$pfb['float']		= $pfb['ipconfig']['enable_float'];				// Enable/Disable floating autorules
+	$pfb['fw_self']		= $pfb['ipconfig']['fw_self_outbound'] ?? '';			// Also apply outbound autorules to the firewall's own traffic
 	$pfb['dup']		= $pfb['ipconfig']['enable_dup'];				// Enable remove of duplicate IPs utilizing grepcidr
 	$pfb['agg']		= $pfb['ipconfig']['enable_agg'];				// Enable aggregation of CIDRs
 	$pfb['order']		= $pfb['ipconfig']['pass_order'];				// Order of the autorules
@@ -10050,10 +10518,15 @@ function sync_package_pfblockerng($cron='') {
 	#	Assign Rules	#
 	#########################
 
+	// Any pfB alias not in this list will be killed.
+	$pfb_active_aliases = null;
+
 	// Only execute if autorules are defined or if an alias has been removed.
 	if ($pfb['autorules'] || $pfb['enable'] == '' || $pfb['remove']) {
+		$pfb_active_aliases = [];
 		$message = '';
-		if (!empty($pfb['deny_inbound']) || !empty($pfb['permit_inbound']) || !empty($pfb['match_inbound'])) {
+		if (!empty($pfb['deny_inbound']) || !empty($pfb['permit_inbound']) || !empty($pfb['match_inbound']) ||
+		    !empty($pfb['deny_self']) || !empty($pfb['permit_self']) || !empty($pfb['match_self'])) {
 			if (empty($pfb['inbound_interfaces'])) {
 				$message = " Unable to apply rules. Inbound interface option not configured.";
 			}
@@ -10133,6 +10606,14 @@ function sync_package_pfblockerng($cron='') {
 									$other_rules[] = $rule;
 								}
 							}
+						}
+					}
+
+					// Track pfB aliases referenced by rules.
+					foreach (array('source', 'destination') as $rtype) {
+						if ((substr($rule[$rtype]['address'], 0, 4) == 'pfB_') &&
+						    !in_array($rule[$rtype]['address'], $pfb_active_aliases)) {
+							$pfb_active_aliases[] = $rule[$rtype]['address'];
 						}
 					}
 
@@ -10221,6 +10702,14 @@ function sync_package_pfblockerng($cron='') {
 							$new_rules[] = $cb_rules;
 						}
 					}
+					// issue #3382: firewall-traffic twins ride the Inbound interfaces (floating 'out' from (self)).
+					foreach (array('permit_self', 'match_self') as $self_role) {
+						foreach ($pfb[$self_role] ?? array() as $cb_rules) {
+							$cb_rules['interface'] = $inbound_interface;
+							$cb_rules['tracker'] = pfb_tracker($cb_rules['descr'], $inbound_interface, $self_role);
+							$new_rules[] = $cb_rules;
+						}
+					}
 					// Match inbound rules defined as floating only.
 					if ($pfbrunonce && !empty($pfb['match_inbound'])) {
 						foreach ($pfb['match_inbound'] as $cb_rules) {
@@ -10250,6 +10739,15 @@ function sync_package_pfblockerng($cron='') {
 						foreach ($pfb['deny_inbound'] as $cb_rules) {
 							$cb_rules['interface'] = $inbound_interface;
 							$cb_rules['tracker'] = pfb_tracker($cb_rules['descr'], $inbound_interface, 'deny_in');
+							$new_rules[] = $cb_rules;
+						}
+					}
+					// order_2 without Floating Rules: the user's floating rules sit between the pfB pass and block
+					// twins, so the deny twins follow them below.
+					if (!($pfb['float'] == '' && $pfb['order'] == 'order_2')) {
+						foreach ($pfb['deny_self'] ?? array() as $cb_rules) {
+							$cb_rules['interface'] = $inbound_interface;
+							$cb_rules['tracker'] = pfb_tracker($cb_rules['descr'], $inbound_interface, 'deny_self');
 							$new_rules[] = $cb_rules;
 						}
 					}
@@ -10324,6 +10822,15 @@ function sync_package_pfblockerng($cron='') {
 					$new_rules[] = $cb_rules;
 				}
 			}
+			if ($pfb['float'] == '' && $pfb['order'] == 'order_2') {
+				foreach ($pfb['inbound_interfaces'] as $inbound_interface) {
+					foreach ($pfb['deny_self'] ?? array() as $cb_rules) {
+						$cb_rules['interface'] = $inbound_interface;
+						$cb_rules['tracker'] = pfb_tracker($cb_rules['descr'], $inbound_interface, 'deny_self');
+						$new_rules[] = $cb_rules;
+					}
+				}
+			}
 			if ($pfb['order'] == 'order_4' && !empty($other_rules)) {
 				foreach ($other_rules as $cb_rules) {
 					$new_rules[] = $cb_rules;
@@ -10346,7 +10853,8 @@ function sync_package_pfblockerng($cron='') {
 			}
 
 			unset($pfb['permit_inbound'], $pfb['permit_outbound'], $pfb['deny_inbound'],
-			    $pfb['deny_outbound'], $pfb['match_inbound'], $pfb['match_outbound']);
+			    $pfb['deny_outbound'], $pfb['match_inbound'], $pfb['match_outbound'],
+			    $pfb['permit_self'], $pfb['deny_self'], $pfb['match_self']);
 			unset($cb_rules, $other_rules, $fother_rules, $permit_rules, $fpermit_rules, $match_rules, $fmatch_rules);
 
 			// Remove 'created' tag (New vs old rules array comparison)
@@ -10385,12 +10893,31 @@ function sync_package_pfblockerng($cron='') {
 			pfb_logger("{$log}\n", 1);
 		}
 
-		// Remove all pfB aliastables
 		exec("{$pfb['pfctl']} -s Tables | {$pfb['grep']} '^pfB_'", $pfb_tables);
 		if (isset($pfb_tables)) {
+			$final_alias = array();
+			$pfb_active_aliases = isset($pfb_active_aliases) ? array_unique($pfb_active_aliases) : [];
+			if ($pfb['repcheck'] && ($pfb['drep'] == 'on' || $pfb['prep'] == 'on')) {
+				if (!empty($pfb_alias_lists_all)) {
+					$final_alias = array_intersect(array_unique($pfb_alias_lists_all), $pfb_active_aliases);
+				}
+			} else {
+				if (!empty($pfb_alias_lists)) {
+					$final_alias = array_intersect(array_unique($pfb_alias_lists), $pfb_active_aliases);
+				}
+			}
 			foreach ($pfb_tables as $pfb_table) {
 				$pfb_table_esc = escapeshellarg($pfb_table);
-				exec("{$pfb['pfctl']} -t {$pfb_table_esc} -T kill 2>&1", $result);
+				$pfb_table_path_esc	= escapeshellarg("{$pfb['aliasdir']}/{$pfb_table}.txt");
+				if (in_array($pfb_table, $pfb_active_aliases)) {
+					if (in_array($pfb_table, $final_alias)) {
+						// Replace active pfB aliastables which have been updated
+						exec("{$pfb['pfctl']} -t {$pfb_table_esc} -T replace -f {$pfb_table_path_esc} 2>&1", $result);
+					}
+				} else {
+					// Remove inactive pfB aliastables
+					exec("{$pfb['pfctl']} -t {$pfb_table_esc} -T kill 2>&1", $result);
+				}
 			}
 		}
 
@@ -10730,10 +11257,187 @@ function sync_package_pfblockerng($cron='') {
 }
 
 
+/*
+ * #697: from a pkg/pkg-static argv ($argv[0] = the binary), return the mapped subcommand:
+ * 'delete' (delete/remove/autoremove), 'upgrade', 'reinstall' (install with -f/--force), 'install'
+ * (bare install), or '' (anything else).
+ *
+ * pkg's grammar is `pkg [GLOBAL opts] <command> [command flags]`, and several GLOBAL options come
+ * BEFORE the subcommand and CONSUME the following token as their value (-o -j -c -r -C -R and the
+ * long forms). Those are skipped WITH their value before the subcommand is read -- pfSense passes
+ * -c <chroot> / -r <rootdir> during an OS upgrade, so a naive "first non-dash token" read would
+ * misfire exactly then.
+ */
+function pfb_pkg_argv_subcommand(array $argv): string {
+	// Global options that consume the FOLLOWING token as their value (separated form).
+	$arg_taking_long  = array('--option', '--jail', '--chroot', '--rootdir', '--config', '--repo-conf-dir');
+	$arg_taking_short = array('-o', '-j', '-c', '-r', '-C', '-R');
+
+	$n = count($argv);
+	$i = 1;	// $argv[0] is the binary
+	while ($i < $n) {
+		$tok = (string) $argv[$i];
+		if ($tok === '' || $tok[0] !== '-') {
+			break;	// first non-option token => the subcommand
+		}
+		// Attached value (`--rootdir=/x`, `-r/x`) consumes no extra token.
+		if (str_contains($tok, '=')) {
+			$i++;
+			continue;
+		}
+		if (in_array($tok, $arg_taking_short, TRUE) || in_array($tok, $arg_taking_long, TRUE)) {
+			$i += 2;	// skip the flag AND its value
+			continue;
+		}
+		// Short arg-taking flag with the value glued on (`-r/root`, `-jname`): consume only this token.
+		if (strlen($tok) > 2 && in_array(substr($tok, 0, 2), $arg_taking_short, TRUE)) {
+			$i++;
+			continue;
+		}
+		// No-arg global flag (-v -d -l -N -4 -6, bundles), or an unrecognised bare flag: skip just it.
+		$i++;
+	}
+	if ($i >= $n) {
+		return '';
+	}
+
+	switch (strtolower((string) $argv[$i])) {
+		case 'delete':
+		case 'remove':
+		case 'autoremove':
+			return 'delete';
+		case 'upgrade':
+			return 'upgrade';
+		case 'install':
+		case 'add':
+			// -f/--force among the COMMAND flags => a forced reinstall.
+			for ($j = $i + 1; $j < $n; $j++) {
+				$f = (string) $argv[$j];
+				if ($f === '-f' || $f === '--force') {
+					return 'reinstall';
+				}
+				if (strlen($f) > 1 && $f[0] === '-' && $f[1] !== '-' && str_contains($f, 'f')) {
+					return 'reinstall';	// bundled short flags, e.g. -fy
+				}
+			}
+			return 'install';
+		default:
+			return '';
+	}
+}
+
+
+/*
+ * #697: classify the current package-manager operation by reading the pkg/pkg-static ANCESTOR's
+ * argv. Pure (no I/O) so it is unit-testable: $ps_lines is `ps -o pid,ppid,command` output (one
+ * process per line, "PID PPID COMMAND ..."), $start_pid is the pid to walk up from. Walks the ppid
+ * chain and, at the first ancestor that is pkg/pkg-static, parses + maps the subcommand. Returns ''
+ * when there is no pkg ancestor (a normal cron/manual update, or the GUI) or the subcommand is
+ * unrecognised.
+ */
+function pfb_parse_pkg_operation(array $ps_lines, int $start_pid): string {
+	$procs = array();	// pid => array(ppid, argv[])
+	foreach ($ps_lines as $line) {
+		$parts = preg_split('/\s+/', trim((string) $line));
+		if (!is_array($parts) || count($parts) < 3 || !ctype_digit($parts[0]) || !ctype_digit($parts[1])) {
+			continue;	// header row / malformed
+		}
+		$procs[(int) $parts[0]] = array((int) $parts[1], array_slice($parts, 2));
+	}
+
+	$pid  = $start_pid;
+	$seen = array();
+	for ($hops = 0; $hops < 64; $hops++) {
+		if (!isset($procs[$pid]) || isset($seen[$pid])) {
+			break;
+		}
+		$seen[$pid] = TRUE;
+		list($ppid, $argv) = $procs[$pid];
+
+		// $argv always has >= 1 element (the count()<3 guard above skips shorter rows).
+		$bin = (string) $argv[0];
+		if (in_array($bin, array(
+			'pkg',
+			'pkg-static',
+			'/usr/local/sbin/pkg',
+			'/usr/local/sbin/pkg-static',
+			'/usr/sbin/pkg',
+			'/usr/sbin/pkg-static',
+		), TRUE)) {
+			$op = pfb_pkg_argv_subcommand($argv);
+			if ($op !== '') {
+				return $op;
+			}
+		}
+
+		if ($ppid <= 1 || $ppid === $pid) {
+			break;
+		}
+		$pid = $ppid;
+	}
+	return '';
+}
+
+
+/*
+ * #697: thin, cached wrapper around pfb_parse_pkg_operation() that reads the live process table.
+ * Returns the current pkg operation ('install'/'upgrade'/'reinstall'/'delete') or '' when not run
+ * under pkg. Cached per-process: hooks call it once per fire point and it must not re-ps each time.
+ */
+function pfb_pkg_operation(): string {
+	static $cached = NULL;
+	if ($cached !== NULL) {
+		return $cached;
+	}
+	$out = array();
+	$rc  = 0;
+	exec('/bin/ps -axww -o pid,ppid,command 2>/dev/null', $out, $rc);
+	$cached = ($rc === 0) ? pfb_parse_pkg_operation($out, (int) getmypid()) : '';
+	return $cached;
+}
+
+
+/*
+ * #697: does a pre-deinstall pass that saw pkg operation $op perform a FULL teardown (turn
+ * pfBlockerNG OFF + remove live objects), or SKIP it to keep pfBlockerNG live? Pure decision.
+ *
+ * pfSense reaches our pre-deinstall for BOTH a genuine removal and an in-place package
+ * reinstall/upgrade, but with a DIFFERENT pkg operation: a real uninstall is `pkg delete` ->
+ * 'delete'; the GUI Update / `pkg upgrade` / a forced reinstall is `pkg install -f` / `pkg upgrade`
+ * -> 'install'|'reinstall'|'upgrade'. So tear down ONLY on a delete; keep pfBlockerNG live across a
+ * package upgrade/reinstall (its resync re-applies). An unrecognised operation preserves state:
+ * destructive teardown requires positive evidence of `pkg delete`.
+ */
+function pfb_pkg_op_tears_down(string $op): bool {
+	return $op === 'delete';
+}
+
+
 // Function to De-Install pfBlockerNG
-function pfblockerng_php_pre_deinstall_command() {
+function pfblockerng_php_pre_deinstall_command(?callable $operation = NULL) {
 	require_once('config.inc');
 	global $g, $pfb;
+
+	// #697: tear down ONLY on a genuine removal; keep pfBlockerNG live across a package upgrade.
+	// A non-delete operation skips all disable/teardown mutation; the package's post-install
+	// resync re-applies the package and the existing configuration remains live.
+	if ($operation === NULL) {
+		$pfb_pkg_op = pfb_pkg_operation();
+	} else {
+		$pfb_pkg_op = $operation();
+	}
+	if (!pfb_pkg_op_tears_down($pfb_pkg_op)) {
+		$pfb_pkg_op_label = ($pfb_pkg_op !== '') ? $pfb_pkg_op : 'unknown';
+		update_status("Keeping pfBlockerNG active across the package operation '{$pfb_pkg_op_label}' (not a removal).\n");
+		if ($pfb_pkg_op === '') {
+			logger(
+				LOG_NOTICE,
+				localize_text('Package operation not detected; skipping pfBlockerNG teardown.'),
+				LOG_PREFIX_PKG_PFBLOCKERNG
+			);
+		}
+		return;
+	}
 
 	// Set these two variables to disable pfBlockerNG on de-install
 	$pfb['save'] = $pfb['install'] = TRUE;
@@ -10849,6 +11553,20 @@ function pfb_remove_config_settings() {
 	}
 }
 
+
+// issue #3441: TRUE when pfSense HA copies this node's pfB_DNSBLIP_v4 auto rules to a peer whose DNSBL
+// settings are excluded from pfBlockerNG sync, so the peer serves an empty alias. Only the nine actions
+// pfb_firewall_rule() turns into rules count; Alias_*, Disabled and invalid values create no rule.
+function pfblockerng_sync_dnsblip_mismatch(mixed $syncinterfaces, mixed $synconchanges, mixed $enable, mixed $dnsbl,
+	mixed $dnsbl_ip_action, mixed $hasync_rules): bool {
+	return $syncinterfaces === 'on'
+	    && in_array($synconchanges, ['auto', 'manual'], TRUE)
+	    && $enable === 'on'
+	    && $dnsbl === 'on'
+	    && $hasync_rules === 'on'
+	    && in_array($dnsbl_ip_action, ['Deny_Both', 'Deny_Inbound', 'Deny_Outbound', 'Permit_Both', 'Permit_Inbound',
+		'Permit_Outbound', 'Match_Both', 'Match_Inbound', 'Match_Outbound'], TRUE);
+}
 
 /* Uses XMLRPC to synchronize the changes to a remote node */
 function pfblockerng_sync_on_changes() {

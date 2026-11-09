@@ -26,11 +26,21 @@ require_once('/usr/local/pkg/pfblockerng/pfblockerng.inc');
 
 global $pfb;
 pfb_global();
-$disable_move = FALSE;
 
-$pfb['dconfig'] = config_get_path('installedpackages/pfblockerngdnsblsettings/config/0', []);
+$pfb['dconfig'] = PfbConfig::readSection('installedpackages/pfblockerngdnsblsettings/config/0');
+
+// issue #1669 slice C: General-settings toggle gating the CodeMirror 6 live-highlight
+// overlay for the pfb_regex_list field below (registered in the general section,
+// default on, LENIENT adapter -- mirrors pfb_keep; owned/rendered by
+// pfblockerng_general.php). Read via the PfbConfig gateway -- matches this page's
+// pfb_cache_flush precedent (PfbConfig::read() returns the enum directly here,
+// compared with ===, not ->value).
+$pfb_syntaxhl_on = pfb_editor_enabled();
+
+$pfb_dnsbl_editor = pfb_dnsbl_editor_render($pfb_syntaxhl_on);
 
 // Collect local domain TLD for Python TLD Allow array
+// foreign key — out of ADR-29 gateway scope (system/domain is not a pfblockerng* path)
 if (strpos(config_get_path('system/domain'), '.') !== FALSE) {
 	$local_tld = ltrim(strstr(config_get_path('system/domain'), '.', FALSE), '.');
 } else {
@@ -39,112 +49,157 @@ if (strpos(config_get_path('system/domain'), '.') !== FALSE) {
 $default_tlds = array('arpa',$local_tld,'com','net','org','edu','ca','co','io');
 
 $pconfig = array();
-$pconfig['pfb_dnsbl']		= $pfb['dconfig']['pfb_dnsbl']				?: '';
-$pconfig['pfb_tld']		= $pfb['dconfig']['pfb_tld']				?: '';
-$pconfig['pfb_control']		= $pfb['dconfig']['pfb_control']			?: '';
-$pconfig['pfb_dnsvip4'] = $pfb['dconfig']['pfb_dnsvip4'] ?: 'none';
-$pconfig['pfb_dnsvip6'] = $pfb['dconfig']['pfb_dnsvip6'] ?: 'none';
-$pconfig['pfb_dnsport']		= $pfb['dconfig']['pfb_dnsport']			?: '8081';
-$pconfig['pfb_dnsport_ssl']	= $pfb['dconfig']['pfb_dnsport_ssl']			?: '8443';
-$pconfig['dnsbl_interface']	= $pfb['dconfig']['dnsbl_interface']			?: 'lo0';
-$pconfig['pfb_dnsbl_rule']	= $pfb['dconfig']['pfb_dnsbl_rule']			?: '';
-$pconfig['dnsbl_allow_int']	= explode(',', $pfb['dconfig']['dnsbl_allow_int'])	?: array();
-$pconfig['global_log']		= $pfb['dconfig']['global_log']				?: '';
+$pconfig['pfb_dnsbl']		= PfbConfig::read('dnsbl/pfb_dnsbl');
+$pconfig['tld_wildcard']		= PfbConfig::read('dnsbl/tld_wildcard');
+$pconfig['pfb_control']		= PfbConfig::read('dnsbl/pfb_control');
+$pconfig['pfb_control_legacy']	= PfbConfig::read('dnsbl/pfb_control_legacy');
+// Widget empty-option sentinel 'none'; stored default is '' (save maps none to '').
+$pconfig['pfb_dnsvip4'] = PfbConfig::read('dnsbl/pfb_dnsvip4') ?: 'none';
+$pconfig['pfb_dnsvip6'] = PfbConfig::read('dnsbl/pfb_dnsvip6') ?: 'none';
+$pconfig['pfb_dnsvip_auto']	= PfbConfig::read('dnsbl/pfb_dnsvip_auto');
+$pconfig['pfb_dnsbl_nonat']	= PfbConfig::read('dnsbl/pfb_dnsbl_nonat');
+$pconfig['pfb_dnsport']		= PfbConfig::read('dnsbl/pfb_dnsport');
+$pconfig['pfb_dnsport_ssl']	= PfbConfig::read('dnsbl/pfb_dnsport_ssl');
+$pconfig['dnsbl_interface']	= PfbConfig::read('dnsbl/dnsbl_interface');
+$pconfig['pfb_dnsbl_rule']	= PfbConfig::read('dnsbl/pfb_dnsbl_rule');
+$pconfig['dnsbl_allow_int']	= pfb_csv_list(PfbConfig::read('dnsbl/dnsbl_allow_int'));
+// issue #3288: the normalized, grandfather-prefilled policy cache -- NOT a bare
+// PfbConfig::read(), which would show the raw (possibly still-legacy) stored
+// bytes instead of the effective Default/Override-ready values.
+$pconfig['global_log']		= $pfb['dnsbl_global_log'];
+$pconfig['global_log_mode']	= $pfb['dnsbl_global_mode']->toStored();
 $pconfig['dnsbl_webpage']	= $pfb['dconfig']['dnsbl_webpage']			?: 'dnsbl_default.php';
-$pconfig['pfb_cache']		= isset($pfb['dconfig']['pfb_cache'])			? $pfb['dconfig']['pfb_cache'] : 'on';
-$pconfig['pfb_dnsbl_sync']	= $pfb['dconfig']['pfb_dnsbl_sync']			?: '';
+$pconfig['pfb_cache_flush']	= PfbConfig::read('dnsbl/pfb_cache_flush');
 
-$pconfig['dnsbl_mode']		= $pfb['dconfig']['dnsbl_mode']				?: '';
-if (isset($pfb['dconfig']['pfb_python'])) {
-	if ($pfb['dconfig']['pfb_python'] == 'on') {
-		$pconfig['dnsbl_mode'] = 'dnsbl_python';
-	} else {
-		$pconfig['dnsbl_mode'] = 'dnsbl_unbound';
-	}
-}
+$pconfig['pfb_hsts']		= PfbConfig::read('dnsbl/pfb_hsts');
+$pconfig['pfb_psl_include_private'] = PfbConfig::read('dnsbl/pfb_psl_include_private');
+$pconfig['pfb_psl_allow_private'] = PfbConfig::read('dnsbl/pfb_psl_allow_private');
+// issue #2371: feed-at-suffix policy selects (PfbFeedSuffixPolicy enum; absent -> Honor).
+// ->value gives the runtime option key the <select> options below carry (same idiom as
+// pfb_idn above).
+$pconfig['pfb_psl_feed_private_policy'] = PfbConfig::read('dnsbl/pfb_psl_feed_private_policy')->value;
+$pconfig['pfb_psl_feed_icann_policy'] = PfbConfig::read('dnsbl/pfb_psl_feed_icann_policy')->value;
+// ADR-08: IDN mode selector (Off | All-IDN | Confusable). PfbConfig::read() returns a
+// PfbIdnMode enum (legacy 'on' -> All; alpha-only 'all', legacy 'off', and '' -> Off);
+// enum value gives the runtime option key that the <select> options below carry.
+$pconfig['pfb_idn']		= PfbConfig::read('dnsbl/pfb_idn')->value;
+// Confusable-mode sub-toggles: block clearly-malicious homoglyphs is default-on;
+// escalate suspicious mixed-script (else alert only) is opt-in (default off).
+// Default 'on' owned by the registry (ADR-29); PfbConfig::read applies it when absent.
+$pconfig['pfb_idn_block_malicious']	= PfbConfig::read('dnsbl/pfb_idn_block_malicious');
+$pconfig['pfb_idn_escalate_suspicious']	= PfbConfig::read('dnsbl/pfb_idn_escalate_suspicious');
+$pconfig['pfb_regex']		= PfbConfig::read('dnsbl/pfb_regex');
+$pconfig['pfb_regex_cap']	= PfbConfig::read('dnsbl/pfb_regex_cap');
+$pconfig['pfb_cname']		= PfbConfig::read('dnsbl/pfb_cname');
+// ADR-22: lenient scheme parsing. Absent = unchecked (strict) for new installs; existing
+// installs are grandfathered to 'on' by the registry pass at install/upgrade (issue #1921).
+$pconfig['pfb_dnsbl_lenient']	= PfbConfig::read('dnsbl/pfb_dnsbl_lenient');
+$pconfig['pfb_noaaaa']		= PfbConfig::read('dnsbl/pfb_noaaaa');
+$pconfig['pfb_gp']		= PfbConfig::read('dnsbl/pfb_gp');
+$pconfig['tld_allow']		= PfbConfig::read('dnsbl/tld_allow');
+$pconfig['tld_allow_sort']	= PfbConfig::read('dnsbl/tld_allow_sort');
+$pconfig['tld_allow_gtld']	= pfb_csv_list(PfbConfig::read('dnsbl/tld_allow_gtld'), $default_tlds);
+$pconfig['tld_allow_cctld']	= pfb_csv_list(PfbConfig::read('dnsbl/tld_allow_cctld'));
+$pconfig['tld_allow_itld']	= pfb_csv_list(PfbConfig::read('dnsbl/tld_allow_itld'));
+$pconfig['tld_allow_bgtld']	= pfb_csv_list(PfbConfig::read('dnsbl/tld_allow_bgtld'));
+$pconfig['pfb_py_nolog']	= PfbConfig::read('dnsbl/pfb_py_nolog');
+$pconfig['pfb_regex_list']	= pfb_b64_text(PfbConfig::read('dnsbl/pfb_regex_list'));
+$pconfig['pfb_noaaaa_list']	= pfb_b64_text(PfbConfig::read('dnsbl/pfb_noaaaa_list'));
+$pconfig['pfb_gp_bypass_list']	= pfb_b64_text(PfbConfig::read('dnsbl/pfb_gp_bypass_list'));
+$pconfig['action']		= PfbConfig::read('dnsbl/action');
+$pconfig['aliaslog']		= PfbConfig::read('dnsbl/aliaslog');
 
-$pconfig['pfb_py_reply']	= isset($pfb['dconfig']['pfb_py_reply'])		? $pfb['dconfig']['pfb_py_reply'] : 'on';
-$pconfig['pfb_py_block']	= isset($pfb['dconfig']['pfb_py_block'])		? $pfb['dconfig']['pfb_py_block'] : 'on';
-$pconfig['pfb_hsts']		= isset($pfb['dconfig']['pfb_hsts'])			? $pfb['dconfig']['pfb_hsts'] : 'on';
-$pconfig['pfb_idn']		= $pfb['dconfig']['pfb_idn']				?: '';
-$pconfig['pfb_regex']		= $pfb['dconfig']['pfb_regex']				?: '';
-$pconfig['pfb_cname']		= $pfb['dconfig']['pfb_cname']				?: '';
-$pconfig['pfb_noaaaa']		= $pfb['dconfig']['pfb_noaaaa']				?: '';
-$pconfig['pfb_gp']		= $pfb['dconfig']['pfb_gp']				?: '';
-$pconfig['pfb_pytld']		= $pfb['dconfig']['pfb_pytld']				?: '';
-$pconfig['pfb_pytld_sort']	= $pfb['dconfig']['pfb_pytld_sort']			?: '';
-$pconfig['pfb_pytlds_gtld']	= explode(',', $pfb['dconfig']['pfb_pytlds_gtld'])	?: $default_tlds;
-$pconfig['pfb_pytlds_cctld']	= explode(',', $pfb['dconfig']['pfb_pytlds_cctld'])	?: array();
-$pconfig['pfb_pytlds_itld']	= explode(',', $pfb['dconfig']['pfb_pytlds_itld'])	?: array();
-$pconfig['pfb_pytlds_bgtld']	= explode(',', $pfb['dconfig']['pfb_pytlds_bgtld'])	?: array();
-$pconfig['pfb_py_nolog']	= $pfb['dconfig']['pfb_py_nolog']			?: '';
-$pconfig['pfb_regex_list']	= base64_decode($pfb['dconfig']['pfb_regex_list'])	?: '';
-$pconfig['pfb_noaaaa_list']	= base64_decode($pfb['dconfig']['pfb_noaaaa_list'])	?: '';
-$pconfig['pfb_gp_bypass_list']	= base64_decode($pfb['dconfig']['pfb_gp_bypass_list'])	?: '';
-$pconfig['action']		= $pfb['dconfig']['action']				?: 'Disabled';
-$pconfig['aliaslog']		= $pfb['dconfig']['aliaslog']				?: 'enabled';
+// issue #2123: the eight Advanced In/Outbound rule checkbox defaults are owned by the
+// registry (ADR-29), not restated here. A validation-error redisplay replaces $pconfig
+// with raw $_POST (:1019), so the renders still run the value through the toggle read
+// adapter -- that call is the POST-redisplay adapter, not a second default.
+$pconfig['autoaddrnot_in']	= PfbConfig::read('dnsbl/autoaddrnot_in');
+$pconfig['autoports_in']	= PfbConfig::read('dnsbl/autoports_in');
+$pconfig['aliasports_in']	= PfbConfig::read('dnsbl/aliasports_in');
+$pconfig['autoaddr_in']		= PfbConfig::read('dnsbl/autoaddr_in');
+$pconfig['autonot_in']		= PfbConfig::read('dnsbl/autonot_in');
+$pconfig['aliasaddr_in']	= PfbConfig::read('dnsbl/aliasaddr_in');
+$pconfig['autoproto_in']	= PfbConfig::read('dnsbl/autoproto_in');
+$pconfig['agateway_in']		= PfbConfig::read('dnsbl/agateway_in');
 
-$pconfig['autoaddrnot_in']	= $pfb['dconfig']['autoaddrnot_in']			?: '';
-$pconfig['autoports_in']	= $pfb['dconfig']['autoports_in']			?: '';
-$pconfig['aliasports_in']	= $pfb['dconfig']['aliasports_in']			?: '';
-$pconfig['autoaddr_in']		= $pfb['dconfig']['autoaddr_in']			?: '';
-$pconfig['autonot_in']		= $pfb['dconfig']['autonot_in']				?: '';
-$pconfig['aliasaddr_in']	= $pfb['dconfig']['aliasaddr_in']			?: '';
-$pconfig['autoproto_in']	= $pfb['dconfig']['autoproto_in']			?: 'any';
-$pconfig['agateway_in']		= $pfb['dconfig']['agateway_in']			?: 'default';
+$pconfig['autoaddrnot_out']	= PfbConfig::read('dnsbl/autoaddrnot_out');
+$pconfig['autoports_out']	= PfbConfig::read('dnsbl/autoports_out');
+$pconfig['aliasports_out']	= PfbConfig::read('dnsbl/aliasports_out');
+$pconfig['autoaddr_out']	= PfbConfig::read('dnsbl/autoaddr_out');
+$pconfig['autonot_out']		= PfbConfig::read('dnsbl/autonot_out');
+$pconfig['aliasaddr_out']	= PfbConfig::read('dnsbl/aliasaddr_out');
+$pconfig['autoproto_out']	= PfbConfig::read('dnsbl/autoproto_out');
+$pconfig['agateway_out']	= PfbConfig::read('dnsbl/agateway_out');
 
-$pconfig['autoaddrnot_out']	= $pfb['dconfig']['autoaddrnot_out']			?: '';
-$pconfig['autoports_out']	= $pfb['dconfig']['autoports_out']			?: '';
-$pconfig['aliasports_out']	= $pfb['dconfig']['aliasports_out']			?: '';
-$pconfig['autoaddr_out']	= $pfb['dconfig']['autoaddr_out']			?: '';
-$pconfig['autonot_out']		= $pfb['dconfig']['autonot_out']			?: '';
-$pconfig['aliasaddr_out']	= $pfb['dconfig']['aliasaddr_out']			?: '';
-$pconfig['autoproto_out']	= $pfb['dconfig']['autoproto_out']			?: 'any';
-$pconfig['agateway_out']	= $pfb['dconfig']['agateway_out']			?: 'default';
+$pconfig['whitelist']		= pfb_b64_text(PfbConfig::read('dnsbl/whitelist'));
 
-$pconfig['suppression']		= base64_decode($pfb['dconfig']['suppression'])		?: '';
+$pconfig['top1m_enable']	= PfbConfig::read('dnsbl/top1m_enable');
+// Routed via the gateway (not the section array) so a stored legacy 'alexa'
+// (dead TOP1M source, #872/#877) coalesces to 'tranco' for the form select.
+// ->toStored() unwraps the PfbTop1mSource enum to its scalar option key (a
+// Form_Select selected-value must be the scalar, not the enum instance).
+$pconfig['top1m_source']		= PfbConfig::read('dnsbl/top1m_source')->toStored();
+$pconfig['top1m_count']		= PfbConfig::read('dnsbl/top1m_count');
+// 0 (unlimited) is meaningful, so don't use the ?: idiom (0 is falsy -> would reset to default).
+$pconfig['pfb_py_cache_max']	= (isset($pfb['dconfig']['pfb_py_cache_max']) && $pfb['dconfig']['pfb_py_cache_max'] !== '') ? $pfb['dconfig']['pfb_py_cache_max'] : '10000';
+$pconfig['top1m_inclusion']	= pfb_csv_list(PfbConfig::read('dnsbl/top1m_inclusion'), array('com','net','org','ca','co','io'));
 
-$pconfig['alexa_enable']	= $pfb['dconfig']['alexa_enable']			?: '';
-$pconfig['alexa_type']		= $pfb['dconfig']['alexa_type']				?: 'tranco';
-$pconfig['alexa_count']		= $pfb['dconfig']['alexa_count']			?: '1000';
-$pconfig['alexa_inclusion']	= explode(',', $pfb['dconfig']['alexa_inclusion'])	?: array('com','net','org','ca','co','io');
+$pconfig['tld_wildcard_exclusion']	= pfb_b64_text(PfbConfig::read('dnsbl/tld_wildcard_exclusion'));
+$pconfig['tld_wildcard_blacklist']	= pfb_b64_text(PfbConfig::read('dnsbl/tld_wildcard_blacklist'));
 
-$pconfig['tldexclusion']	= base64_decode($pfb['dconfig']['tldexclusion'])	?: '';
-$pconfig['tldblacklist']	= base64_decode($pfb['dconfig']['tldblacklist'])	?: '';
-$pconfig['tldwhitelist']	= base64_decode($pfb['dconfig']['tldwhitelist'])	?: '';
+// DoH/DoT/DoQ blocking — stored in pfblockerngsafesearch; read via gateway (registered keys)
+$pconfig['safesearch_doh']		= PfbConfig::read('ss/safesearch_doh');
+$pconfig['safesearch_doh_list']		= explode(',', PfbConfig::read('ss/safesearch_doh_list'));
+
+// [ ADR-36 ] DNS Redirect — stored in pfblockerngdnsblsettings; read via gateway.
+$pconfig['dnsbl_redir']			= PfbConfig::read('dnsbl/dnsbl_redir');
+$pfb_redir_int_raw			= (string) PfbConfig::read('dnsbl/dnsbl_redir_int');
+$pconfig['dnsbl_redir_int']		= ($pfb_redir_int_raw !== '') ? explode(',', $pfb_redir_int_raw) : [];
+$pconfig['dnsbl_redir_exclude']		= (string) PfbConfig::read('dnsbl/dnsbl_redir_exclude');
+
+// [ ADR-37 ] DoT/DoQ Block — stored in pfblockerngdnsblsettings; read via gateway.
+$pconfig['dnsbl_dot_block']		= PfbConfig::read('dnsbl/dnsbl_dot_block');
+$pfb_dot_block_int_raw			= (string) PfbConfig::read('dnsbl/dnsbl_dot_block_int');
+$pconfig['dnsbl_dot_block_int']		= ($pfb_dot_block_int_raw !== '') ? explode(',', $pfb_dot_block_int_raw) : [];
+$pconfig['dnsbl_dot_block_exclude']	= (string) PfbConfig::read('dnsbl/dnsbl_dot_block_exclude');
+$pconfig['dnsbl_dot_block_action']	= (string) PfbConfig::read('dnsbl/dnsbl_dot_block_action');
+$pconfig['dnsbl_dot_block_floating']	= PfbConfig::read('dnsbl/dnsbl_dot_block_floating');
 
 // Select field options
 
-$options_dnsbl_mode		= [ 'dnsbl_unbound' => 'Unbound mode', 'dnsbl_python' => 'Unbound python mode' ];
 $options_dnsbl_interface	= pfb_build_if_list(FALSE, FALSE);
 $options_dnsbl_interface_all	= array_merge(array('lo0' => 'Localhost'), $options_dnsbl_interface);
 $options_dnsbl_interface_cnt	= count($options_dnsbl_interface) ?: '1';
 
 $options_dnsbl_allow_int	= $options_dnsbl_interface;
 
-if ($pfb['dnsbl_py_blacklist']) {
-	$options_global_log_txt = 'Default: <strong>No Global mode</strong><br />'
-				. 'Enabling this option will overide the individual DNSBL Group "Logging/Blocking" settings!<br /><br />'
-				. '&#8226 <strong>Null Block (logging)</strong>, Utilize \'0.0.0.0\' with logging.<br />'
-				. '&#8226 <strong>DNSBL WebServer/VIP</strong>, Domains are sinkholed to the DNSBL VIP and logged via the DNSBL WebServer.<br />'
-				. '&#8226 <strong>Null Block (no logging)</strong>, Utilize \'0.0.0.0\' with no logging.<br />'
-				. 'Blocked domains will be reported to the Alert/Python Block Table.<br /><br />'
-				. 'A \'Force Reload - DNSBL\' is required for changes to take effect';
+// [ ADR-36 ] DNS Redirect: WAN-excluded interface list (same filter as Permit Firewall Rules).
+$options_dnsbl_redir_int	= $options_dnsbl_interface;
 
-	$options_global_log	= [	''		=> 'No Global mode',
-					'disabled_log'	=> 'Null Block (logging)',
-					'enabled'	=> 'DNSBL WebServer/VIP',
-					'disabled'	=> 'Null Block (no logging)'];
-} else {
-	$options_global_log_txt = 'Default: <strong>No Global mode</strong><br />'
-					. '&#8226 When \'Enabled\', Domains are sinkholed to the DNSBL VIP and logged via the DNSBL WebServer.<br />'
-					. '&#8226 When \'Disabled\', <strong>\'0.0.0.0\'</strong> will be used instead of the DNSBL VIP.<br />'
-					. 'A \'Force Reload - DNSBL\' is required for changes to take effect';
+// [ ADR-37 ] DoT/DoQ Block: WAN-excluded interface list (same filter as Permit Firewall Rules).
+$options_dnsbl_dot_block_int	= $options_dnsbl_interface;
 
-	$options_global_log	= [	''		=> 'No Global mode',
-					'enabled'	=> 'DNSBL WebServer/VIP',
-					'disabled'	=> 'Null Block (no logging)'];
-}
+// [ ADR-37 ] DoT/DoQ Block: rule action selector (mirrors the IP-settings Rule Action).
+$options_dnsbl_dot_block_action	= [ 'block' => 'Block', 'reject' => 'Reject' ];
+
+$options_global_log_txt = 'The <strong>Global Logging/Blocking Mode</strong> applies to every DNSBL group, as selected by <strong>Global Application Mode</strong> below.'
+			. '<div class="infoblock">'
+			. pfb_dnsbl_mechanism_help()
+			. '<p>Logged blocks appear on <strong>Reports</strong> &gt; <strong>Alerts</strong>; no-logging modes only count them.</p>'
+			. '</div>';
+
+$options_global_log	= pfb_dnsbl_mechanism_labels();
+
+$options_global_log_mode_txt = 'Choose how <strong>Global Logging/Blocking Mode</strong> applies to DNSBL groups.'
+			. '<div class="infoblock"><ul>'
+			. '<li><strong>Default</strong>: each group uses its own setting. Groups set to <strong>Default</strong> inherit <strong>Global Logging/Blocking Mode</strong> without being edited individually.</li>'
+			. '<li><strong>Override</strong>: every group uses <strong>Global Logging/Blocking Mode</strong>; its saved choice is kept for when you return to <strong>Default</strong>.</li>'
+			. '</ul>'
+			. '<p>Saved changes take effect at an automatic apply or when you use <strong>Run Now</strong> on <strong>Update</strong>.</p>'
+			. '</div>';
+
+$options_global_log_mode	= [	'default'	=> 'Default',
+					'override'	=> 'Override'];
 
 $options_dnsbl_webpage = array();
 $indexdir = '/usr/local/www/pfblockerng/www';
@@ -165,13 +220,26 @@ if (is_dir("{$indexdir}")) {
 }
 $options_dnsbl_webpage_cnt = count($options_dnsbl_webpage) ?: '1';
 
-$options_alexa_type		= [ 'tranco' => 'Tranco TOP1M', 'cisco' => 'Cisco Umbrella TOP1M', 'alexa' => 'Alexa TOP1M' ];
+$options_top1m_source		= [ 'tranco' => 'Tranco TOP1M', 'cisco' => 'Cisco Umbrella TOP1M',
+					    'openpagerank' => 'OpenPageRank TOP1M', 'majestic' => 'Majestic Million TOP1M',
+					    'cloudflare' => 'Cloudflare Radar' ];
 
-$options_alexa_count		= [	'500' => 'Top 500', '1000' => 'Top 1k', '2000' => 'Top 2k', '5000' => 'Top 5k', '10000' => 'Top 10k',
+// ADR-59: providers whose 'auth' needs the top1m_token field, derived from the
+// descriptor table so a future token provider needs no JS edit -- the JS toggle
+// below shows/hides the masked token field based on the selected provider.
+$pfb_top1m_token_providers = [];
+foreach (pfb_top1m_providers() as $pfb_top1m_id => $pfb_top1m_provider_row) {
+	if (is_array($pfb_top1m_provider_row['auth']) && !empty($pfb_top1m_provider_row['auth']['header'])) {
+		$pfb_top1m_token_providers[] = $pfb_top1m_id;
+	}
+}
+$pfb_top1m_token_providers_json = json_encode($pfb_top1m_token_providers);
+
+$options_top1m_count		= [	'500' => 'Top 500', '1000' => 'Top 1k', '2000' => 'Top 2k', '5000' => 'Top 5k', '10000' => 'Top 10k',
 					'25000' => 'Top 25k', '50000' => 'Top 50k', '75000' => 'Top 75k', '100000' => 'Top 100k', '250000' => 'Top 250k',
 					'500000' => 'Top 500k', '750000' => 'Top 750k', '1000000' => 'Top 1M' ];
 
-$options_alexa_inclusion	= [	'ae' => 'AE',
+$options_top1m_inclusion	= [	'ae' => 'AE',
 					'aero' => 'AERO',
 					'ag' => 'AG',
 					'al' => 'AL',
@@ -323,42 +391,191 @@ $options_alexa_inclusion	= [	'ae' => 'AE',
 					'za' => 'ZA'
 				];
 
-$options_action			= [ 'Disabled' => 'Disabled', 'Deny_Inbound' => 'Deny Inbound', 'Deny_Outbound' => 'Deny Outbound', 'Deny_Both' => 'Deny Both', 'Alias_Deny' => 'Alias Deny' ];
+$options_action			= [ 'Disabled' => 'Disabled', 'Deny_Inbound' => 'Deny Inbound', 'Deny_Outbound' => 'Deny Outbound', 'Deny_Both' => 'Deny Both', 'Alias_Deny' => 'Alias Deny', 'Alias_Native' => 'Alias Native' ];
 
 $options_aliaslog		= [ 'enabled' => 'Enable', 'disabled' => 'Disable' ];
 
-// Collect all pfSense 'Port' Aliases
-$ports_list = $networks_list = '';
-foreach (config_get_path('aliases/alias', []) as $alias) {
-	if ($alias['type'] == 'port') {
-		$ports_list .= "{$alias['name']},";
-	} elseif ($alias['type'] == 'network') {
-		$networks_list .= "{$alias['name']},";
-	}
-}
-$ports_list			= trim($ports_list, ',');
-$networks_list			= trim($networks_list, ',');
-$options_aliasports_in		= $options_aliasports_out	= explode(',', $ports_list);
-$options_aliasaddr_in		= $options_aliasaddr_out	= explode(',', $networks_list);
+// DoH/DoT/DoQ blocking options — stored in pfblockerngsafesearch (foreign section; see ADR-29 foreign-key exclusion list)
+$options_safesearch_doh		= ['Disable' => 'Disable', 'Enable' => 'Enable'];
+$options_safesearch_doh_list	= [
+					'use-application-dns.net' => 'Firefox [use-application-dns.net]',
+					'cloudflare-dns.com' => 'CloudFlare DoH/DoT [cloudflare-dns.com]',
+					'security.cloudflare-dns.com' => 'CloudFlare Security DoH/DoT [security.cloudflare-dns.com]',
+					'family.cloudflare-dns.com' => 'CloudFlare Family DoH/DoT [family.cloudflare-dns.com]',
+					'one.one.one.one' => 'CloudFlare One [one.one.one.one]',
+					'1dot1dot1dot1.cloudflare-dns.com' => 'CloudFlare 1dot DoT [1dot1dot1dot1.cloudflare-dns.com]',
+					'dns.google' => 'Google DoH/DoT [dns.google]',
+					'doh.dns.apple.com' => 'Apple [doh.dns.apple.com]',
+					'mask.icloud.com' => 'Apple iCloud Private Relay [mask.icloud.com]',
+					'mask-h2.icloud.com' => 'Apple iCloud Private Relay [mask-h2.icloud.com]',
+					'mask-api.icloud.com' => 'Apple iCloud Private Relay [mask-api.icloud.com]',
+					'mask-t.apple-dns.net' => 'Apple iCloud Private Relay [mask-t.apple-dns.net]',
+					'mask.apple-dns.net' => 'Apple iCloud Private Relay [mask.apple-dns.net]',
+					'mask-api.fe.apple-dns.net' => 'Apple iCloud Private Relay [mask-api.fe.apple-dns.net]',
+					'doh.opendns.com' => 'OpenDNS DoH [doh.opendns.com]',
+					'doh.familyshield.opendns.com' => 'OpenDNS Family DoH [doh.familyshield.opendns.com]',
+					'dns.quad9.net' => 'Quad9 DoH/DoT [dns.quad9.net]',
+					'dns10.quad9.net' => 'Quad9 Unsecured DoH/DoT [dns10.quad9.net]',
+					'dns11.quad9.net' => 'Quad9 ECS DoH/DoT [dns11.quad9.net]',
+					'dns.adguard-dns.com' => 'AdGuard DoH/DoT/DoQ [dns.adguard-dns.com]',
+					'unfiltered.adguard-dns.com' => 'AdGuard Unfiltered DoH/DoT/DoQ [unfiltered.adguard-dns.com]',
+					'family.adguard-dns.com' => 'AdGuard Family DoH/DoT/DoQ [family.adguard-dns.com]',
+					'doh.cleanbrowsing.org' => 'CleanBrowsing [doh.cleanbrowsing.org]',
+					'security-filter-dns.cleanbrowsing.org' => 'CleanBrowsing Security [security-filter-dns.cleanbrowsing.org]',
+					'family-filter-dns.cleanbrowsing.org' => 'CleanBrowsing Family [family-filter-dns.cleanbrowsing.org]',
+					'adult-filter-dns.cleanbrowsing.org' => 'CleanBrowsing Adult [adult-filter-dns.cleanbrowsing.org]',
+					'dns.nextdns.io' => 'NextDNS DoH/DoT/DoQ [dns.nextdns.io]',
+					'dns.switch.ch' => 'SWITCH DoH/DoT [dns.switch.ch]',
+					'dns.futuredns.me' => 'FutureDNS DoH/DoT/DoQ [dns.futuredns.me]',
+					'dns.comss.one' => 'Comss.ru West DoH/DoT [dns.comss.one]',
+					'dns.east.comss.one' => 'Comss.ru East [dns.east.comss.one]',
+					'private.canadianshield.cira.ca' => 'CIRA Private [private.canadianshield.cira.ca]',
+					'protected.canadianshield.cira.ca' => 'CIRA Protected [protected.canadianshield.cira.ca]',
+					'family.canadianshield.cira.ca' => 'CIRA Family [family.canadianshield.cira.ca]',
+					'doh-fi.blahdns.com' => 'BlahDNS DoH Finland [doh-fi.blahdns.com]',
+					'doh-jp.blahdns.com' => 'BlahDNS DoH Japan [doh-jp.blahdns.com]',
+					'doh-de.blahdns.com' => 'BlahDNS DoH Germany [doh-de.blahdns.com]',
+					'dot-fi.blahdns.com' => 'BlahDNS DoT Finland [dot-fi.blahdns.com]',
+					'dot-jp.blahdns.com' => 'BlahDNS DoT Japan [dot-fi.blahdns.com]',
+					'dot-de.blahdns.com' => 'BlahDNS DoT Germany [dot-de.blahdns.com]',
+					'fi.doh.dns.snopyta.org' => 'Snopyta [fi.doh.dns.snopyta.org]',
+					'dns-doh.dnsforfamily.com' => 'DNS for Family DoH [dns-doh.dnsforfamily.com]',
+					'dns-dot.dnsforfamily.com' => 'DNS for Family DoT [dns-dot.dnsforfamily.com]',
+					'odvr.nic.cz' => 'CZ.NIC ODVR [odvr.nic.cz]',
+					'dns.alidns.com' => 'Ali [dns.alidns.com]',
+					'dns.cfiec.net' => 'CFIEC [dns.cfiec.net]',
+					'asia.dnscepat.id' => 'DNSCEPAT Asia [asia.dnscepat.id]',
+					'eropa.dnscepat.id' => 'DNSCEPAT Eropa [eropa.dnscepat.id]',
+					'doh.360.cn' => '360 Secure [doh.360.cn]',
+					'public.dns.iij.jp' => 'IIJ.JP [public.dns.iij.jp]',
+					'dns.pub' => 'DNSPod [dns.pub]',
+					'doh.pub' => 'DNSPod DoH [doh.pub]',
+					'dot.pub' => 'DNSPod DoT [dot.pub]',
+					'dns.twnic.tw' => 'Quad101 [dns.twnic.tw]',
+					'doh.tiarap.org' => 'Privacy-First Singapore [doh.tiarap.org]',
+					'doh.tiar.app' => 'Privacy-First Singapore DoH/DoQ [doh.tiar.app]',
+					'dot.tiar.app' => 'Privacy-First Singapore DoT [dot.tiar.app]',
+					'jp.tiarap.org' => 'Privacy-First Japan DoH [jp.tiarap.org]',
+					'jp.tiar.app' => 'Privacy-First Japan DoT [jp.tiar.app]',
+					'dns.oszx.co' => 'OSZX [dns.oszx.co]',
+					'dns.pumplex.com' => 'Pumplex [dns.pumplex.com]',
+					'doh.applied-privacy.net' => 'Applied Privacy DoH [doh.applied-privacy.net]',
+					'dot1.applied-privacy.net' => 'Applied Privacy DoT [dot1.applied-privacy.net]',
+					'dns.decloudus.com' => 'DeCloudUs [dns.decloudus.com]',
+					'resolver-eu.lelux.fi' => 'Lelux [resolver-eu.lelux.fi]',
+					'doh.dns.sb' => 'DNS.SB [doh.dns.sb]',
+					'dnsforge.de' => 'DNS Forge [dnsforge.de]',
+					'kaitain.restena.lu' => 'Fondation Restena [kaitain.restena.lu]',
+					'doh.ffmuc.net' => 'FFMUC DoH [doh.ffmuc.net]',
+					'dot.ffmuc.net' => 'FFMUC DoT [dot.ffmuc.net]',
+					'dns.digitale-gesellschaft.ch' => 'Digitale Gesellschaft [dns.digitale-gesellschaft.ch]',
+					'doh.libredns.gr' => 'LibreDNS DoH [doh.libredns.gr]',
+					'dot.libredns.gr' => 'LibreDNS DoT [dot.libredns.gr]',
+					'ibksturm.synology.me' => 'ibksturm [ibksturm.synology.me]',
+					'getdnsapi.net' => 'DNS Privacy [getdnsapi.net]',
+					'dnsovertls.sinodun.com' => 'DNS Privacy TLS [dnsovertls.sinodun.com]',
+					'dnsovertls1.sinodun.com' => 'DNS Privacy TLS2 [dnsovertls1.sinodun.com]',
+					'unicast.censurfridns.dk' => 'DNS Privacy Unicast [unicast.censurfridns.dk]',
+					'anycast.censurfridns.dk' => 'DNS Privacy Anycast [anycast.censurfridns.dk]',
+					'dns.cmrg.net' => 'DNS Privacy dkg [dns.cmrg.net]',
+					'dns.larsdebruin.net' => 'DNS Privacy larsdebruin [dns.larsdebruin.net]',
+					'dns-tls.bitwiseshift.net' => 'DNS Privacy bitwiseshift [dns-tls.bitwiseshift.net]',
+					'ns1.dnsprivacy.at' => 'DNS Privacy dnsprivacy [ns1.dnsprivacy.at]',
+					'ns2.dnsprivacy.at' => 'DNS Privacy dnsprivacy2 [ns2.dnsprivacy.at]',
+					'dns.bitgeek.in' => 'DNS Privacy bitgeek [dns.bitgeek.in]',
+					'dns.neutopia.org' => 'DNS Privacy neutopia [dns.neutopia.org]',
+					'privacydns.go6lab.si' => 'DNS Privacy Go6Lab [privacydns.go6lab.si]',
+					'dot.securedns.eu' => 'DNS Privacy securedns [dot.securedns.eu]',
+					'dnsotls.lab.nic.cl' => 'DNS Privacy NIC Chile [dnsotls.lab.nic.cl]',
+					'tls-dns-u.odvr.dns-oarc.net' => 'DNS Privacy OARC [tls-dns-u.odvr.dns-oarc.net]',
+					'doh.centraleu.pi-dns.com' => 'PI-DNS Central EU DoH [doh.centraleu.pi-dns.com]',
+					'dot.centraleu.pi-dns.com' => 'PI-DNS Central EU DoT [dot.centraleu.pi-dns.com]',
+					'doh.northeu.pi-dns.com' => 'PI-DNS North EU DoH [doh.northeu.pi-dns.com]',
+					'dot.northeu.pi-dns.com' => 'PI-DNS North EU DoT [dot.northeu.pi-dns.com]',
+					'doh.westus.pi-dns.com' => 'PI-DNS West USA DoH [doh.westus.pi-dns.com]',
+					'dot.westus.pi-dns.com' => 'PI-DNS West USA DoT [dot.westus.pi-dns.com]',
+					'doh.eastus.pi-dns.com' => 'PI-DNS East USA DoH [doh.eastus.pi-dns.com]',
+					'dot.eastus.pi-dns.com' => 'PI-DNS East USA DoT [dot.eastus.pi-dns.com]',
+					'doh.eastau.pi-dns.com' => 'PI-DNS East AU DoH [doh.eastau.pi-dns.com]',
+					'dot.eastau.pi-dns.com' => 'PI-DNS East AU DoT [dot.eastau.pi-dns.com]',
+					'doh.eastas.pi-dns.com' => 'PI-DNS East AS DoH [doh.eastas.pi-dns.com]',
+					'dot.eastas.pi-dns.com' => 'PI-DNS East AS DoT [dot.eastas.pi-dns.com]',
+					'doh.pi-dns.com' => 'PI-DNS [doh.pi-dns.com]',
+					'dot.seby.io' => 'Seby [dot.seby.io]',
+					'doh-2.seby.io' => 'Seby 2 [doh-2.seby.io]',
+					'doh.dnslify.com' => 'DNSlify [doh.dnslify.com]',
+					'dns.yandex' => 'Yandex DoH/DoT [dns.yandex]',
+					'blitz.ahadns.com' => 'AhaDNS Blitz DoH [blitz.ahadns.com]',
+					'doh.nl.ahadns.net' => 'AhaDNS Blitz Netherlands DoH [doh.nl.ahadns.net]',
+					'dot.nl.ahadns.net' => 'AhaDNS Blitz Netherlands DoT [dot.nl.ahadns.net]',
+					'doh.in.ahadns.net' => 'AhaDNS Blitz India DoH [doh.in.ahadns.net]',
+					'dot.in.ahadns.net' => 'AhaDNS Blitz India DoT [dot.in.ahadns.net]',
+					'doh.la.ahadns.net' => 'AhaDNS Blitz Las Angeles DoH [doh.la.ahadns.net]',
+					'dot.la.ahadns.net' => 'AhaDNS Blitz Las Angeles DoT [dot.la.ahadns.net]',
+					'doh.ny.ahadns.net' => 'AhaDNS Blitz New York DoH [doh.ny.ahadns.net]',
+					'dot.ny.ahadns.net' => 'AhaDNS Blitz New York DoT [dot.ny.ahadns.net]',
+					'doh.pl.ahadns.net' => 'AhaDNS Blitz Poland DoH [doh.pl.ahadns.net]',
+					'dot.pl.ahadns.net' => 'AhaDNS Blitz Poland DoT [dot.pl.ahadns.net]',
+					'doh.it.ahadns.net' => 'AhaDNS Blitz Italy DoH [doh.it.ahadns.net]',
+					'dot.it.ahadns.net' => 'AhaDNS Blitz Italy DoT [dot.it.ahadns.net]',
+					'doh.es.ahadns.net' => 'AhaDNS Blitz Spain DoH [doh.es.ahadns.net]',
+					'dot.es.ahadns.net' => 'AhaDNS Blitz Spain DoT [dot.es.ahadns.net]',
+					'doh.no.ahadns.net' => 'AhaDNS Blitz Norway DoH [doh.no.ahadns.net]',
+					'dot.no.ahadns.net' => 'AhaDNS Blitz Norway DoT [dot.no.ahadns.net]',
+					'doh.chi.ahadns.net' => 'AhaDNS Blitz Chicago DoH [doh.chi.ahadns.net]',
+					'dot.chi.ahadns.net' => 'AhaDNS Blitz Chicago DoT [dot.chi.ahadns.net]',
+					'doh.au.ahadns.net' => 'AhaDNS Blitz Australia DoH [doh.au.ahadns.net]',
+					'dot.au.ahadns.net' => 'AhaDNS Blitz Australia DoT [dot.au.ahadns.net]',
+					'basic.rethinkdns.com' => 'RethinkDNS DoH [basic.rethinkdns.com]',
+					'max.rethinkdns.com' => 'RethinkDNS DoT [max.rethinkdns.com]',
+					'freedns.controld.com' => 'ControlD DoH [freedns.controld.com]',
+					'p0.freedns.controld.com' => 'ControlD DoT [p0.freedns.controld.com]',
+					'p1.freedns.controld.com' => 'ControlD DoT [p1.freedns.controld.com]',
+					'p2.freedns.controld.com' => 'ControlD DoT [p2.freedns.controld.com]',
+					'p3.freedns.controld.com' => 'ControlD DoT [p3.freedns.controld.com]',
+					'doh.mullvad.net' => 'Mullvad [doh.mullvad.net]',
+					'adblock.doh.mullvad.net' => 'Mullvad [adblock.doh.mullvad.net]',
+					'dns.arapurayil.com' => 'Arapurayil [dns.arapurayil.com]',
+					'dandelionsprout.asuscomm.com' => 'Dandelion Sprout DoH/DoT/DoQ [dandelionsprout.asuscomm.com]',
+					'zero.dns0.eu' => 'European public DNS DoH/DoT/DoQ [zero.dns0.eu]'
+					];
+
+// Collect all pfSense 'Port' + address-bearing Aliases
+// foreign key — out of ADR-29 gateway scope (aliases/alias is not a pfblockerng* path)
+$pfb_ac_lists			= pfb_alias_autocomplete_lists(config_get_path('aliases/alias', []));
+$options_aliasports_in		= $options_aliasports_out	= $pfb_ac_lists['ports'];
+$options_aliasaddr_in		= $options_aliasaddr_out	= $pfb_ac_lists['networks'];
+$ports_list			= implode(',', array_keys($pfb_ac_lists['ports']));
+$networks_list			= implode(',', array_keys($pfb_ac_lists['networks']));
 
 $options_autoproto_in		= $options_autoproto_out	= get_ipprotocols();
 $options_agateway_in		= $options_agateway_out		= pfb_get_gateways();
+
+// $input_errors and $savemsg are read unconditionally in the render section below,
+// so they must be defined on every request path. Initialise them once.
+$input_errors = array();
+$savemsg = '';
 
 // Validate input fields and save
 if ($_POST) {
 	if (isset($_POST['save'])) {
 
-		if (isset($input_errors)) {
-			unset($input_errors);
+		// issue #1723: sanitize at ingestion -- first step, before any evaluation.
+		foreach (array('pfb_dnsvip4', 'pfb_dnsvip6', 'dnsbl_webpage', 'dnsbl_redir_exclude', 'dnsbl_dot_block_exclude',
+				'top1m_token', 'aliasaddr_in', 'aliasaddr_out', 'aliasports_in', 'aliasports_out') as $pfb_text_field) {
+			$_POST[$pfb_text_field] = pfb_sanitize_text((string) ($_POST[$pfb_text_field] ?? ''));
+		}
+		foreach (array('pfb_regex_list', 'pfb_noaaaa_list', 'pfb_gp_bypass_list', 'whitelist', 'tld_wildcard_exclusion', 'tld_wildcard_blacklist') as $pfb_text_area_field) {
+			$_POST[$pfb_text_area_field] = pfb_sanitize_text_area((string) ($_POST[$pfb_text_area_field] ?? ''));
 		}
 
 		// Validate Select field options
-		$select_options = array(	'dnsbl_mode'		=> 'dnsbl_unbound',
-						'dnsbl_interface'	=> 'lo0',
-						'global_log'		=> '',
+		$select_options = array(						'dnsbl_interface'	=> 'lo0',
+						'global_log'		=> $pconfig['global_log'],
+						'global_log_mode'	=> $pconfig['global_log_mode'],
 						'dnsbl_webpage'		=> 'dnsbl_default.php',
-						'alexa_type'		=> 'tranco',
-						'alexa_count'		=> '1000',
+						'top1m_source'		=> 'tranco',
+						'top1m_count'		=> '1000',
 						'action'		=> 'Disabled',
 						'aliaslog'		=> 'enabled',
 						'aliasports_in'		=> '',
@@ -368,7 +585,8 @@ if ($_POST) {
 						'autoproto_in'		=> 'any',
 						'autoproto_out'		=> 'any',
 						'agateway_in'		=> 'default',
-						'agateway_out'		=> 'default'
+						'agateway_out'		=> 'default',
+						'dnsbl_dot_block_action'=> 'reject'
 						);
 
 		foreach ($select_options as $s_option => $s_default) {
@@ -382,7 +600,7 @@ if ($_POST) {
 
 		// Validate Select field (array) options
 		$select_options = array(	'dnsbl_allow_int'	=> '',
-						'alexa_inclusion'	=> $default_tlds
+						'top1m_inclusion'	=> $default_tlds
 						);
 
 		foreach ($select_options as $s_option => $s_default) {
@@ -401,7 +619,8 @@ if ($_POST) {
 
 		// Validate DNSBL webserver block page
 		$dnsbl_webpage		= FALSE;
-		$dnsbl_webpage_file	= pfb_filter(basename($_POST['dnsbl_webpage']), PFB_FILTER_WORD_DOT, 'dnsbl', 'dnsbl_default.php');
+		// issue #1723: already sanitized by the ingestion prologue above -- plain read.
+		$dnsbl_webpage_file	= pfb_filter(basename($_POST['dnsbl_webpage'] ?? ''), PFB_FILTER_WORD_DOT, 'dnsbl', 'dnsbl_default.php');
 		if (file_exists("/usr/local/www/pfblockerng/www/{$dnsbl_webpage_file}") &&
 		    @filesize("/usr/local/www/pfblockerng/www/{$dnsbl_webpage_file}") > 0 &&
 		    pfb_filter(array("/usr/local/www/pfblockerng/www/{$dnsbl_webpage_file}", 'text/html'), PFB_FILTER_FILE_MIME_COMPARE, 'dnsbl')) {
@@ -411,6 +630,7 @@ if ($_POST) {
 				$dnsbl_webpage = TRUE;
 			}
 			$pfb['dconfig']['dnsbl_webpage'] = $dnsbl_webpage_file;
+			// foreign key — out of ADR-29 gateway scope (dnsbl_webpage is out-of-scope; see CfgGatewayTest $out_of_scope)
 			config_set_path('installedpackages/pfblockerngdnsblsettings/config/0/dnsbl_webpage', $pfb['dconfig']['dnsbl_webpage']);
 		}
 		else {
@@ -423,11 +643,9 @@ if ($_POST) {
 			}
 		}
 
-		if (!is_port($_POST['pfb_dnsport'])) {
-			$input_errors[] = 'DNSBL Port is invalid!';
-		}
-		if (!is_port($_POST['pfb_dnsport_ssl'])) {
-			$input_errors[] = 'DNSBL SSL Port is invalid!';
+		if (isset($_POST['pfb_py_cache_max']) && $_POST['pfb_py_cache_max'] !== '' &&
+			(!ctype_digit((string) $_POST['pfb_py_cache_max']) || (int) $_POST['pfb_py_cache_max'] > 5000000)) {
+			$input_errors[] = 'DNSBL Decision cache max entries must be a whole number between 0 and 5000000.';
 		}
 
 		// Non-ascii characters are not allowed for DNSBL Regex
@@ -435,29 +653,49 @@ if ($_POST) {
 			$input_errors[] = 'DNSBL Regex list contains non-ascii characters';
 		}
 
+		// ADR-08: IDN Blocking mode must be one of the <select> options. PFB_FILTER_WORD
+		// only checks shape, so without this an out-of-vocabulary value (e.g. a tampered
+		// POST) would canonicalise to Off and silently disable IDN blocking.
+		if (!in_array(pfb_filter($_POST['pfb_idn'] ?? '', PFB_FILTER_WORD, 'dnsbl'),
+			array('off', 'confusable', 'on'), TRUE)) {
+			$input_errors[] = 'DNSBL IDN Blocking mode is invalid!';
+		}
+
+		// ADR-59: top1m_token is a masked, write-only field -- a blank POST means
+		// "leave the stored token unchanged" (never overwrite/clear it), so only a
+		// NON-EMPTY submission is validated. PFB_FILTER_WORD (used by asn_token) would
+		// reject a real base64url/JWT token -- PFB_FILTER_TOKEN accepts that charset.
+		// Reference 'top1m_token' suppresses pfb_filter()'s failed-validation log line
+		// -- the token itself must never reach a log, even a rejected one.
+		// issue #1723: already sanitized by the ingestion prologue above -- plain read.
+		$pfb_top1m_token_post = (string) ($_POST['top1m_token'] ?? '');
+		if ($pfb_top1m_token_post !== '' && empty(pfb_filter($pfb_top1m_token_post, PFB_FILTER_TOKEN, 'top1m_token'))) {
+			$input_errors[] = 'DNSBL TOP1M Token is invalid!';
+		}
+
 		// Validate customlists
-		foreach (array(	'pfb_regex_list'	=> 'regex',
+		foreach (array(
 				'pfb_noaaaa_list'	=> 'domain',
 				'pfb_gp_bypass_list'	=> 'ip',
-				'suppression'		=> 'domain',
-				'tldexclusion'		=> 'hostname',
-				'tldblacklist'		=> 'tld',
-				'tldwhitelist'		=> 'tldwhite' ) as $custom_type => $custom_format) {
+				'whitelist'		=> 'domain',
+				'tld_wildcard_exclusion'		=> 'hostname',
+				'tld_wildcard_blacklist'		=> 'tld' ) as $custom_type => $custom_format) {
 
 				if (!empty($_POST[$custom_type])) {
-					$customlist = explode("\r\n", $_POST[$custom_type]);
+					// issue #1723: the ingestion prologue already normalized CRLF/CR to LF,
+					// so per-line validation now splits on "\n" (the pre-#1723 "\r\n" split
+					// matched a browser's raw CRLF submission; that separator no longer
+					// survives ingestion).
+					$customlist = explode("\n", $_POST[$custom_type]);
 					if (!empty($customlist)) {
 						foreach ($customlist as $line) {
 
-							if (substr($line, 0, 1) == '#' || empty($line)) {
+							if (str_starts_with($line, '#') || empty($line)) {
 								continue;
 							}
 							$value = array_map('trim', preg_split('/(?=#)/', $line));
 
 							switch ($custom_format) {
-								case 'regex':
-									// TODO (See non-ascii validation above)
-									break;
 								case 'hostname':
 									$value[0] = trim($value[0], '.');
 									if (empty(pfb_filter($value[0], PFB_FILTER_HOSTNAME, 'dnsbl'))) {
@@ -465,28 +703,21 @@ if ($_POST) {
 									}
 									break;
 								case 'domain':
-									$value[0] = trim($value[0], '.');
+									// issue #1741: only the trailing dot(s) come off -- pfb_filter()
+									// takes the leading-dot wildcard form itself, and stripping that
+									// here would validate an invalid '..host' row as a legal one.
+									$value[0] = rtrim($value[0], '.');
 									if (empty(pfb_filter($value[0], PFB_FILTER_DOMAIN, 'dnsbl'))) {
 										$input_errors[] = "Customlist {$custom_type}: Invalid Domain name entry: [ " . htmlspecialchars($line) . " ]";
 									}
 									break;
 								case 'ip':
-									if (empty(pfb_filter($value[0], PFB_FILTER_IP, 'dnsbl'))) {
-										$input_errors[] = "Customlist {$custom_type}: Invalid IP entry: [ " . htmlspecialchars($line) . " ]";
+									// issue #3508: a bare IP or an IPv4/IPv6 CIDR; is_subnet() first so a valid CIDR never logs a pfb_filter() rejection.
+									if (!is_subnet($value[0]) && empty(pfb_filter($value[0], PFB_FILTER_IP, 'dnsbl'))) {
+										$input_errors[] = "Customlist {$custom_type}: Invalid IP or CIDR entry: [ " . htmlspecialchars($line) . " ]";
 									}
 									break;
 								case 'tld':
-									if (empty(pfb_filter($value[0], PFB_FILTER_TLD, 'dnsbl'))) {
-										$input_errors[] = "Customlist {$custom_type}: Invalid TLD entry: [ " . htmlspecialchars($line) . " ]";
-									}
-									break;
-								case 'tldwhite':
-									if (strpos($value[0], '|') !== FALSE) {
-										list($value[0], $host) = array_map('trim', explode('|', $value[0]));
-										if (empty(pfb_filter($host, PFB_FILTER_IP, 'dnsbl'))) {
-											$input_errors[] = "Customlist {$custom_type}: Invalid TLD IP entry: [ " . htmlspecialchars($line) . " ]"; 
-										}
-									}
 									if (empty(pfb_filter($value[0], PFB_FILTER_TLD, 'dnsbl'))) {
 										$input_errors[] = "Customlist {$custom_type}: Invalid TLD entry: [ " . htmlspecialchars($line) . " ]";
 									}
@@ -498,17 +729,55 @@ if ($_POST) {
 					}
 				}
 		}
+		// A usable validator always runs, so an entry the resolver would drop is reported
+		// whether or not the feature is on yet. Only the fail-closed branch is gated: with
+		// no usable interpreter, pfb_unbound.py loads Regex List patterns solely when this
+		// toggle is on, so an unloaded list must not make the whole page unsavable.
+		$pfb_regex_python = pfb_python_interpreter();
+		$pfb_regex_ready = $pfb_regex_python !== '';
+		if (pfb_dnsbl_regex_validation_required_page(
+			$pfb_regex_ready,
+			$_POST['pfb_regex'] ?? ''
+		)) {
+			foreach (pfb_dnsbl_regex_validation_errors((string) ($_POST['pfb_regex_list'] ?? ''), PFB_PYTHON_WRAPPER, ($_POST['pfb_regex_cap'] ?? '') === 'on') as $regex_error) {
+				$input_errors[] = 'Customlist pfb_regex_list: ' . htmlspecialchars($regex_error, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+			}
+		}
 
 		// Validate DNSBL VIP address
-		if ($_POST['pfb_dnsvip4'] == 'none') {
-			$_POST['pfb_dnsvip4'] = '';
+		// [ ADR-13 ] Auto-create mode: pfBlockerNG owns the DNSBL sinkhole VIP(s) and
+		// provisions them server side on the next pfb_create_dnsbl('enabled') pass
+		// (pfb_manage_dnsbl_vip). The manual dropdowns are disabled in the UI (a disabled
+		// control is not submitted), so the manual VIP validation (existence / interface /
+		// overlap) does NOT apply — the package picks a conflict-free address and
+		// provisions the v6 VIP itself when the resolver listens on IPv6. In manual mode
+		// (box off) the validator runs, but only while a block answers with the VIP (issue #3539); a missing IPv6 VIP is NOT a save
+		// error (ADR-13 §7 pivot — it is a non-blocking runtime warning from pfb_global).
+		$pfb_auto = (isset($_POST['pfb_dnsvip_auto']) && $_POST['pfb_dnsvip_auto'] == 'on');
+		// issue #3539: the saved configuration needs a VIP only while a block answers with it.
+		$pfb_posted_policy = pfb_dnsbl_policy_from_post($_POST, $local_tld, $default_tlds);
+		$pfb_vip_demand = pfb_dnsbl_candidate_vip_demand($pfb['dconfig'], $pfb_posted_policy);
+		if (!$pfb_auto) {
+			// issue #1723: already sanitized by the ingestion prologue above.
+			if (($_POST['pfb_dnsvip4'] ?? '') == 'none') {
+				$_POST['pfb_dnsvip4'] = '';
+			}
+			if (($_POST['pfb_dnsvip6'] ?? '') == 'none') {
+				$_POST['pfb_dnsvip6'] = '';
+			}
+			if ($pfb_vip_demand) {
+				list($vips_valid, $error) = pfb_validate_vips($_POST['dnsbl_interface'], $_POST['pfb_dnsvip4'] ?? '', $_POST['pfb_dnsvip6'] ?? '');
+				if (!$vips_valid) {
+					$input_errors[] = "DNSBL: {$error}";
+				}
+			}
 		}
-		if ($_POST['pfb_dnsvip6'] == 'none') {
-			$_POST['pfb_dnsvip6'] = '';
-		}
-		list($vips_valid, $error) = pfb_validate_vips($_POST['dnsbl_interface'], $_POST['pfb_dnsvip4'], $_POST['pfb_dnsvip6']);
-		if (!$vips_valid) {
-			$input_errors[] = "DNSBL: {$error}";
+
+		// The web server ports are required only while a block answers with the VIP; a value given must still be valid.
+		foreach (array('pfb_dnsport' => 'DNSBL Port', 'pfb_dnsport_ssl' => 'DNSBL SSL Port') as $port_key => $port_label) {
+			if (($pfb_vip_demand || ($_POST[$port_key] ?? '') !== '') && !is_port($_POST[$port_key] ?? '')) {
+				$input_errors[] = "{$port_label} is invalid!";
+			}
 		}
 
 		// Validate Adv. firewall rule 'Protocol' setting
@@ -523,105 +792,198 @@ if ($_POST) {
 			}
 		}
 
+		// Validate DoH/DoT/DoQ blocking fields (stored in pfblockerngsafesearch — foreign section)
+		if (($_POST['safesearch_doh'] ?? '') == 'Enable' && empty($_POST['safesearch_doh_list'])) {
+			$input_errors[] = 'Warning: With DoH/DoT/DoQ Blocking enabled, you must select at least one List';
+		}
+
+		if (!array_key_exists($_POST['safesearch_doh'] ?? '', $options_safesearch_doh)) {
+			$_POST['safesearch_doh'] = 'Disable';
+		}
+
+		if (is_array($_POST['safesearch_doh_list'] ?? '')) {
+			foreach ($_POST['safesearch_doh_list'] as $validate) {
+				if (!array_key_exists($validate, $options_safesearch_doh_list)) {
+					$_POST['safesearch_doh_list'] = '';
+					break;
+				}
+			}
+		}
+		elseif (!array_key_exists($_POST['safesearch_doh_list'] ?? '', $options_safesearch_doh_list)) {
+			$_POST['safesearch_doh_list'] = '';
+		}
+
+		// Validate DNS Redirect fields.
+		$redir_ifaces_raw = (array)($_POST['dnsbl_redir_int'] ?? []);
+		// issue #1723: already sanitized by the ingestion prologue above -- plain read.
+		$redir_alias_raw  = (string)($_POST['dnsbl_redir_exclude'] ?? '');
+		$redir_errors     = pfb_validate_dns_redirect_post(
+			$redir_ifaces_raw,
+			array_keys($options_dnsbl_redir_int),
+			$redir_alias_raw
+		);
+		$input_errors = array_merge($input_errors, $redir_errors);
+
+		// Validate DoT/DoQ Block fields.
+		$dot_block_ifaces_raw = (array)($_POST['dnsbl_dot_block_int'] ?? []);
+		// issue #1723: already sanitized by the ingestion prologue above -- plain read.
+		$dot_block_alias_raw  = (string)($_POST['dnsbl_dot_block_exclude'] ?? '');
+		$dot_block_action_raw = (string)($_POST['dnsbl_dot_block_action'] ?? 'reject');
+		$dot_block_errors     = pfb_validate_dot_block_post(
+			$dot_block_ifaces_raw,
+			array_keys($options_dnsbl_dot_block_int),
+			$dot_block_alias_raw,
+			$dot_block_action_raw
+		);
+		$input_errors = array_merge($input_errors, $dot_block_errors);
+
 		if (!$input_errors) {
+			// issue #3515: the pfB-DNS page and the Resolver move write config.xml under this lock; this whole-section save, and
+			// write_config() with it (it writes the whole copy this request read), must not put back what they wrote since.
+			$pfb_config_lock = pfb_dns_config_lock();
+			if ($pfb_config_lock === NULL) {
+				$input_errors[] = 'DNSBL: another save of the pfSense configuration is in progress, so these settings were not saved. Save again in a moment.';
+			}
+		}
+
+		if (!$input_errors) {
+			// The fresh read replaced the config the validation above chose the block page in: take the section from it again.
+			// foreign key — out of ADR-29 gateway scope (dnsbl_webpage is out-of-scope; see CfgGatewayTest $out_of_scope)
+			config_set_path('installedpackages/pfblockerngdnsblsettings/config/0/dnsbl_webpage', $dnsbl_webpage_file);
+			$pfb['dconfig'] = PfbConfig::readSection('installedpackages/pfblockerngdnsblsettings/config/0');
+
+			// issue #3288: facade runs BEFORE persisting the submitted policy choice.
+			// Refresh $pfb['dconfig'] if it changed -- the pre-facade snapshot would
+			// otherwise clobber a NEWCFG-seeded bystander field at writeSection() below.
+			if (pfb_dnsbl_policy_upgrade()) {
+				$pfb['dconfig'] = PfbConfig::readSection('installedpackages/pfblockerngdnsblsettings/config/0');
+			}
+
+			$pfb_top1m_settings_before = array(
+				'enable'   => PfbConfig::read('dnsbl/top1m_enable')->toStored(),
+				'count'    => PfbConfig::read('dnsbl/top1m_count'),
+				'tld'      => PfbConfig::read('dnsbl/top1m_inclusion'),
+				'provider' => PfbConfig::read('dnsbl/top1m_source')->toStored(),
+			);
 
 			$pfb['dconfig']['pfb_dnsbl']		= pfb_filter($_POST['pfb_dnsbl'], PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
-			$pfb['dconfig']['pfb_tld']		= pfb_filter($_POST['pfb_tld'], PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
+			$pfb['dconfig'] = array_replace($pfb['dconfig'], $pfb_posted_policy);
+			$psl_include_private = pfb_filter($_POST['pfb_psl_include_private'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl') ?: '';
+			$psl_allow_private = pfb_filter($_POST['pfb_psl_allow_private'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl') ?: '';
+			// issue #2371: feed-at-suffix policy selects. PFB_FILTER_WORD only checks shape
+			// (word chars) -- the canonicalisation to the three-token vocabulary (anything
+			// else -> Honor) happens in PfbConfig::write()'s write_adapter
+			// (pfb_cfg_feed_suffix_policy_write -> PfbFeedSuffixPolicy::fromStored), same
+			// fail-safe principle as PfbToggle/PfbIdnMode's unknown-token fallback.
+			$psl_feed_private_policy = pfb_filter($_POST['pfb_psl_feed_private_policy'] ?? '', PFB_FILTER_WORD, 'dnsbl') ?: '';
+			$psl_feed_icann_policy = pfb_filter($_POST['pfb_psl_feed_icann_policy'] ?? '', PFB_FILTER_WORD, 'dnsbl') ?: '';
 			$pfb['dconfig']['pfb_control']		= pfb_filter($_POST['pfb_control'], PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
-			$pfb['dconfig']['pfb_dnsvip6'] = $_POST['pfb_dnsvip6'] ?: '';
+			$pfb['dconfig']['pfb_control_legacy']	= pfb_filter($_POST['pfb_control_legacy'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
+			$pfb['dconfig']['pfb_dnsbl_nonat']	= pfb_filter($_POST['pfb_dnsbl_nonat'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
+
+			// [ ADR-13 ] Persist the auto-create decision. When ON, leave the stored
+			// pfb_dnsvip4/6 ids untouched here (the manual dropdowns are disabled): the
+			// next pfb_create_dnsbl('enabled') pass (pfb_manage_dnsbl_vip) provisions the
+			// marked VIP(s) and repoints pfb_dnsvip4/6 to the new _vip{uniqid} ids. When
+			// OFF, the manual dropdown selections are saved below exactly as before.
+			$pfb['dconfig']['pfb_dnsvip_auto']	= $pfb_auto ? 'on' : '';
+			if (!$pfb_auto) {
+				$pfb['dconfig']['pfb_dnsvip6'] = $_POST['pfb_dnsvip6'] ?: '';
+			}
 
 			$pfb['dconfig']['pfb_dnsport']		= $_POST['pfb_dnsport']							?: '8081';
 			$pfb['dconfig']['pfb_dnsport_ssl']	= $_POST['pfb_dnsport_ssl']						?: '8443';
 			$pfb['dconfig']['pfb_dnsbl_rule']	= pfb_filter($_POST['pfb_dnsbl_rule'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
 			$pfb['dconfig']['dnsbl_allow_int']	= implode(',', (array)$_POST['dnsbl_allow_int'])			?: '';
-			$pfb['dconfig']['global_log']		= $_POST['global_log']							?: '';
-			$pfb['dconfig']['pfb_cache']		= pfb_filter($_POST['pfb_cache'], PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
-			$pfb['dconfig']['pfb_dnsbl_sync']	= pfb_filter($_POST['pfb_dnsbl_sync'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
+			unset($pfb['dconfig']['pfb_cache']);
+			$pfb['dconfig']['pfb_cache_flush']	= pfb_filter($_POST['pfb_cache_flush'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
 
-			$pfb['dconfig']['pfb_py_reply']		= pfb_filter($_POST['pfb_py_reply'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
-			$pfb['dconfig']['pfb_hsts']		= pfb_filter($_POST['pfb_hsts'], PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
-			$pfb['dconfig']['pfb_idn']		= pfb_filter($_POST['pfb_idn'], PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
-			$pfb['dconfig']['pfb_regex']		= pfb_filter($_POST['pfb_regex'], PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
+			// issue #1907: checkbox-absent is the owner-ruled empty Off token.
+			$pfb['dconfig']['pfb_hsts']		= pfb_filter($_POST['pfb_hsts'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl') ?: '';
+			// issue #1887: checkbox-absent is the owner-ruled empty Off token.
+			$pfb['dconfig']['pfb_idn_block_malicious']	= pfb_filter($_POST['pfb_idn_block_malicious'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl') ?: '';
+			$pfb['dconfig']['pfb_idn_escalate_suspicious']	= pfb_filter($_POST['pfb_idn_escalate_suspicious'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl') ?: '';
+			$pfb['dconfig']['pfb_regex_cap']	= pfb_filter($_POST['pfb_regex_cap'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
 			$pfb['dconfig']['pfb_cname']		= pfb_filter($_POST['pfb_cname'], PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
+			$pfb['dconfig']['pfb_dnsbl_lenient']	= pfb_filter($_POST['pfb_dnsbl_lenient'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
 			$pfb['dconfig']['pfb_noaaaa']		= pfb_filter($_POST['pfb_noaaaa'], PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
 			$pfb['dconfig']['pfb_gp']		= pfb_filter($_POST['pfb_gp'], PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
 
-			$pfb['dconfig']['pfb_pytld']		= pfb_filter($_POST['pfb_pytld'], PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
-			$pfb['dconfig']['pfb_pytld_sort']	= pfb_filter($_POST['pfb_pytld_sort'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
+			$pfb['dconfig']['tld_allow_sort']	= pfb_filter($_POST['tld_allow_sort'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
 			$pfb['dconfig']['pfb_py_nolog']		= pfb_filter($_POST['pfb_py_nolog'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
-
-			// Python TLD Allow (Add default TLD Allows + ARPA + pfSense TLD
-			if (!empty($_POST['pfb_pytlds_gtld'])) {
-				$pfb['dconfig']['pfb_pytlds_gtld']	= "arpa,{$local_tld}," . implode(',', (array)$_POST['pfb_pytlds_gtld']); 
-			} else {
-				$pfb['dconfig']['pfb_pytlds_gtld']	= implode(',', $default_tlds);
-			}
-
-			// Python TLD Allow
-			$pfb['dconfig']['pfb_pytlds_cctld']	= implode(',', (array)$_POST['pfb_pytlds_cctld']);
-			$pfb['dconfig']['pfb_pytlds_itld']	= implode(',', (array)$_POST['pfb_pytlds_itld']);
-			$pfb['dconfig']['pfb_pytlds_bgtld']	= implode(',', (array)$_POST['pfb_pytlds_bgtld']);
 
 			$pfb['dconfig']['action']		= $_POST['action']							?: 'Disabled';
 			$pfb['dconfig']['aliaslog']		= $_POST['aliaslog']							?: 'enabled';
 
-			$pfb['dconfig']['autoaddrnot_in']	= pfb_filter($_POST['autoaddrnot_in'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
-			$pfb['dconfig']['autoports_in']		= pfb_filter($_POST['autoports_in'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
+			$pfb['dconfig']['autoaddrnot_in']	= pfb_filter($_POST['autoaddrnot_in'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
+			$pfb['dconfig']['autoports_in']		= pfb_filter($_POST['autoports_in'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
+			// issue #1723: aliasaddr_in/out, aliasports_in/out already sanitized by the
+			// ingestion prologue above -- plain read.
 			$pfb['dconfig']['aliasports_in']	= $_POST['aliasports_in']						?: '';
-			$pfb['dconfig']['autoaddr_in']		= pfb_filter($_POST['autoaddr_in'], PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
-			$pfb['dconfig']['autonot_in']		= pfb_filter($_POST['autonot_in'], PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
+			$pfb['dconfig']['autoaddr_in']		= pfb_filter($_POST['autoaddr_in'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
+			$pfb['dconfig']['autonot_in']		= pfb_filter($_POST['autonot_in'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
 			$pfb['dconfig']['aliasaddr_in']		= $_POST['aliasaddr_in']						?: '';
 			$pfb['dconfig']['autoproto_in']		= $_POST['autoproto_in']						?: 'any';
 			$pfb['dconfig']['agateway_in']		= $_POST['agateway_in']							?: 'default';
 
-			$pfb['dconfig']['autoaddrnot_out']	= pfb_filter($_POST['autoaddrnot_out'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
-			$pfb['dconfig']['autoports_out']	= pfb_filter($_POST['autoports_out'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
+			$pfb['dconfig']['autoaddrnot_out']	= pfb_filter($_POST['autoaddrnot_out'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
+			$pfb['dconfig']['autoports_out']	= pfb_filter($_POST['autoports_out'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
 			$pfb['dconfig']['aliasports_out']	= $_POST['aliasports_out']						?: '';
-			$pfb['dconfig']['autoaddr_out']		= pfb_filter($_POST['autoaddr_out'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
-			$pfb['dconfig']['autonot_out']		= pfb_filter($_POST['autonot_out'], PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
+			$pfb['dconfig']['autoaddr_out']		= pfb_filter($_POST['autoaddr_out'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
+			$pfb['dconfig']['autonot_out']		= pfb_filter($_POST['autonot_out'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl')		?: '';
 			$pfb['dconfig']['aliasaddr_out']	= $_POST['aliasaddr_out']						?: '';
 			$pfb['dconfig']['autoproto_out']	= $_POST['autoproto_out']						?: 'any';
 			$pfb['dconfig']['agateway_out']		= $_POST['agateway_out']						?: 'default';
 
-			$pfb['dconfig']['alexa_enable']		= pfb_filter($_POST['alexa_enable'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
+			$pfb['dconfig']['top1m_enable']		= pfb_filter($_POST['top1m_enable'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
 
-			$pfb['dconfig']['pfb_regex_list']	= base64_encode($_POST['pfb_regex_list'])				?: '';
-			$pfb['dconfig']['pfb_noaaaa_list']	= base64_encode($_POST['pfb_noaaaa_list'])				?: '';
-			$pfb['dconfig']['pfb_gp_bypass_list']	= base64_encode($_POST['pfb_gp_bypass_list'])				?: '';
-			$pfb['dconfig']['suppression']		= base64_encode($_POST['suppression'])					?: '';
-			$pfb['dconfig']['tldexclusion']		= base64_encode($_POST['tldexclusion'])					?: '';
-			$pfb['dconfig']['tldblacklist']		= base64_encode($_POST['tldblacklist'])					?: '';
-			$pfb['dconfig']['tldwhitelist']		= base64_encode($_POST['tldwhitelist'])					?: '';
+			// issue #1723: already sanitized by the ingestion prologue above -- plain encode.
+			$pfb['dconfig']['pfb_noaaaa_list']	= base64_encode($_POST['pfb_noaaaa_list'] ?? '');
+			$pfb['dconfig']['pfb_gp_bypass_list']	= base64_encode($_POST['pfb_gp_bypass_list'] ?? '');
+			$pfb['dconfig']['whitelist']		= base64_encode($_POST['whitelist'] ?? '');
+			$pfb['dconfig']['tld_wildcard_exclusion']		= base64_encode($_POST['tld_wildcard_exclusion'] ?? '');
 
-			// Reset TOP1M Database/Whitelist on user changes
-			if ($pfb['dconfig']['alexa_type'] != $_POST['alexa_type']) {
-				unlink_if_exists("{$pfb['dbdir']}/top-1m.csv");
-				unlink_if_exists("{$pfb['dbdir']}/pfbalexawhitelist.txt");
+			// A provider/auth identity change invalidates only the download detector
+			// baseline. Keep the active source and derived whitelist available until
+			// the replacement download has been validated and published.
+			$pfb_top1m_provider = $_POST['top1m_source'] ?: 'tranco';
+			$pfb_top1m_identity_changed =
+				(PfbConfig::read('dnsbl/top1m_source')->toStored() !== $pfb_top1m_provider) ||
+				($pfb_top1m_token_post !== '' &&
+					PfbConfig::read('dnsbl/top1m_token') !== $pfb_top1m_token_post);
+			$pfb['dconfig']['top1m_source'] = $pfb_top1m_provider;
+
+			// top1m_token: masked/write-only -- blank means "keep the existing stored
+			// token" (never clear it via a blank submit, e.g. an unrelated settings
+			// save re-posting this always-blank-rendered field). $pfb['dconfig']
+			// ['top1m_token'] already holds the current stored value from the
+			// readSection() at the top of this page, so skip the assignment entirely
+			// when the field was left blank.
+			if ($pfb_top1m_token_post !== '') {
+				$pfb['dconfig']['top1m_token'] = $pfb_top1m_token_post;
 			}
-			$pfb['dconfig']['alexa_type']		= $_POST['alexa_type']							?: 'tranco';
-
-			// Reset TOP1M Whitelist on user changes
-			if ($pfb['dconfig']['alexa_count'] != $_POST['alexa_count'] ||
-				explode(',', $pfb['dconfig']['alexa_inclusion']) != $_POST['alexa_inclusion']) {
-				unlink_if_exists("{$pfb['dbdir']}/pfbalexawhitelist.txt");
+			if ($pfb_top1m_identity_changed) {
+				pfb_top1m_invalidate_baseline("{$pfb['dbdir']}/top-1m.csv.zip");
 			}
-			$pfb['dconfig']['alexa_count']		= $_POST['alexa_count']							?: '1000';
 
-			// Remove DNSBL blocking files, when user changes blocking mode
-			if (($pfb['dconfig']['pfb_py_block'] != $_POST['pfb_py_block']) ||
-			    ($pfb['dconfig']['dnsbl_mode'] !== $_POST['dnsbl_mode'] && $_POST['pfb_py_block'] == 'on')) {
-
-				unlink_if_exists("{$pfb['dnsbl_file']}.conf");
-				unlink_if_exists($pfb['unbound_py_data']);
-				unlink_if_exists($pfb['unbound_py_zone']);
-				unlink_if_exists($pfb['unbound_py_wh']);
-				unlink_if_exists("{$pfb['dbdir']}/pfbalexawhitelist.txt");
-				$savemsg = "A Force Reload DNSBL must be run to complete the blocking mode changes! The previous DNSBL database has been deleted!";
+			$pfb['dconfig']['top1m_count']		= $_POST['top1m_count']							?: '1000';
+			$pfb['dconfig']['top1m_inclusion']	= implode(',', (array) $_POST['top1m_inclusion']);
+			$pfb_top1m_settings_after = array(
+				'enable'   => $pfb['dconfig']['top1m_enable'],
+				'count'    => $pfb['dconfig']['top1m_count'],
+				'tld'      => $pfb['dconfig']['top1m_inclusion'],
+				'provider' => $pfb['dconfig']['top1m_source'],
+			);
+			if (pfb_top1m_settings_reprocess($pfb_top1m_settings_before, $pfb_top1m_settings_after)) {
+				touch("{$pfb['dbdir']}/top-1m.update");
 			}
-			$pfb['dconfig']['pfb_py_block']		= pfb_filter($_POST['pfb_py_block'], PFB_FILTER_ON_OFF, 'dnsbl')	?: '';
-			$pfb['dconfig']['dnsbl_mode']		= $_POST['dnsbl_mode']							?: 'dnsbl_unbound';
+			// 0 (unlimited) is meaningful; ctype_digit keeps "0", else fall back to the default.
+			$pfb['dconfig']['pfb_py_cache_max']	= ctype_digit((string) $_POST['pfb_py_cache_max']) ? (string) ((int) $_POST['pfb_py_cache_max']) : '10000';
 
-			$pfb['dconfig']['pfb_dnsvip4']		= $_POST['pfb_dnsvip4']							?: '';
+
+			if (!$pfb_auto) {
+				$pfb['dconfig']['pfb_dnsvip4']	= $_POST['pfb_dnsvip4']							?: '';
+			}
 			$pfb['dconfig']['dnsbl_interface']	= $_POST['dnsbl_interface']						?: 'lo0';
 
 			// Replace DNSBL active blocked webpage with user selection
@@ -629,1326 +991,1107 @@ if ($_POST) {
 				@copy("/usr/local/www/pfblockerng/www/{$pfb['dconfig']['dnsbl_webpage']}", '/usr/local/www/pfblockerng/www/dnsbl_active.php');
 			}
 
-			config_set_path('installedpackages/pfblockerngdnsblsettings/config/0', $pfb['dconfig']);
-			write_config('[pfBlockerNG] save DNSBL settings');
-			if ($savemsg) {
-				header("Location: /pfblockerng/pfblockerng_dnsbl.php?savemsg={$savemsg}");
-			} else {
-				header('Location: /pfblockerng/pfblockerng_dnsbl.php');
+			// Flush the bulk DNSBL settings snapshot FIRST. writeSection() replaces the whole
+			// pfblockerngdnsblsettings/config/0 section with $pfb['dconfig'], which does NOT carry
+			// the per-field registered keys written via PfbConfig::write() below (dnsbl_redir*,
+			// dnsbl_dot_block*). Those leaf writes MUST therefore follow the section write — done
+			// before it they are silently clobbered before write_config() flushes, so enabling DNS
+			// Redirect or DoT/DoQ Block never persists. (safesearch_doh* target a different section.)
+			PfbConfig::writeSection('installedpackages/pfblockerngdnsblsettings/config/0', $pfb['dconfig']);
+			PfbConfig::write('dnsbl/pfb_psl_include_private', $psl_include_private);
+			PfbConfig::write('dnsbl/pfb_psl_allow_private', $psl_allow_private);
+			PfbConfig::write('dnsbl/pfb_psl_feed_private_policy', $psl_feed_private_policy);
+			PfbConfig::write('dnsbl/pfb_psl_feed_icann_policy', $psl_feed_icann_policy);
+
+			// Save DoH/DoT/DoQ blocking fields via gateway (registered keys in pfblockerngsafesearch)
+			PfbConfig::write('ss/safesearch_doh', $_POST['safesearch_doh'] ?: 'Disable');
+			PfbConfig::write('ss/safesearch_doh_list', implode(',', (array)$_POST['safesearch_doh_list']) ?: '');
+
+			// [ ADR-36 ] Save DNS Redirect fields via gateway (registered keys in pfblockerngdnsblsettings)
+			PfbConfig::write('dnsbl/dnsbl_redir', pfb_filter($_POST['dnsbl_redir'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl') ?: '');
+			PfbConfig::write('dnsbl/dnsbl_redir_int', implode(',', $redir_ifaces_raw));
+			PfbConfig::write('dnsbl/dnsbl_redir_exclude', $redir_alias_raw);
+
+			// [ ADR-37 ] Save DoT/DoQ Block fields via gateway (registered keys in pfblockerngdnsblsettings)
+			PfbConfig::write('dnsbl/dnsbl_dot_block', pfb_filter($_POST['dnsbl_dot_block'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl') ?: '');
+			PfbConfig::write('dnsbl/dnsbl_dot_block_int', implode(',', $dot_block_ifaces_raw));
+			PfbConfig::write('dnsbl/dnsbl_dot_block_exclude', $dot_block_alias_raw);
+			PfbConfig::write('dnsbl/dnsbl_dot_block_action', pfb_dot_block_action($dot_block_action_raw));
+			PfbConfig::write('dnsbl/dnsbl_dot_block_floating', pfb_filter($_POST['dnsbl_dot_block_floating'] ?? '', PFB_FILTER_ON_OFF, 'dnsbl') ?: '');
+
+			try {
+				$pfb_written = write_config('[pfBlockerNG] save DNSBL settings');
+			} finally {
+				unlock($pfb_config_lock);
 			}
-			exit;
+			if ($pfb_written !== FALSE && $pfb_written !== -1) {
+				pfb_mark_pending_changes();	// applies on the next Update, not on save
+				header('Location: /pfblockerng/pfblockerng_dnsbl.php');
+				exit;
+			}
+			$input_errors[] = 'DNSBL: the configuration could not be written, so these settings were not saved. Save again in a moment.';
 		}
-		else {
+		if ($input_errors) {
 			$pconfig = $_POST;	// Restore $_POST data on input errors
 		}
 	}
 }
 
-$pgtitle = array(gettext('Firewall'), gettext('pfBlockerNG'), gettext('DNSBL'));
-$pglinks = array('', '/pfblockerng/pfblockerng_dnsbl.php', '@self');
-include_once('head.inc');
-
-if ($input_errors) {
-	print_input_errors($input_errors);
-}
-
-// Define default Alerts Tab href link (Top row)
-$get_req = pfb_alerts_default_page();
-
-$tab_array	= array();
-$tab_array[]	= array(gettext('General'),	false,	'/pfblockerng/pfblockerng_general.php');
-$tab_array[]	= array(gettext('IP'),		false,	'/pfblockerng/pfblockerng_ip.php');
-$tab_array[]	= array(gettext('DNSBL'),	true,	'/pfblockerng/pfblockerng_dnsbl.php');
-$tab_array[]	= array(gettext('Update'),	false,	'/pfblockerng/pfblockerng_update.php');
-$tab_array[]	= array(gettext('Reports'),	false,	"/pfblockerng/pfblockerng_alerts.php{$get_req}");
-$tab_array[]	= array(gettext('Feeds'),	false,	'/pfblockerng/pfblockerng_feeds.php');
-$tab_array[]	= array(gettext('Logs'),	false,	'/pfblockerng/pfblockerng_log.php');
-$tab_array[]	= array(gettext('Sync'),	false,	'/pfblockerng/pfblockerng_sync.php');
-display_top_tabs($tab_array, true);
-
-$tab_array	= array();
-$tab_array[]	= array(gettext('DNSBL Groups'),	false,		'/pfblockerng/pfblockerng_category.php?type=dnsbl');
-$tab_array[]	= array(gettext('DNSBL Category'),	false,		'/pfblockerng/pfblockerng_blacklist.php');
-$tab_array[]	= array(gettext('DNSBL SafeSearch'),	false,		'/pfblockerng/pfblockerng_safesearch.php');
-display_top_tabs($tab_array, true);
-
-if (isset($_REQUEST['savemsg'])) {
-	$savemsg = htmlspecialchars($_REQUEST['savemsg']);
-	print_info_box($savemsg);
-}
-
-$form = new Form('Save DNSBL settings');
-
-$section = new Form_Section('DNSBL');
-$section->addInput(new Form_StaticText(
-	'Links',
-	'<small>'
-	. '<a href="/firewall_aliases.php" target="_blank">Firewall Aliases</a>&emsp;'
-	. '<a href="/firewall_rules.php" target="_blank">Firewall Rules</a>&emsp;'
-	. '<a href="/status_logs_filter.php" target="_blank">Firewall Logs</a></small>'
-));
-
-$dnsbl_text = '<div class="infoblock">
-			<span class="text-danger">Note: </span>
-			DNSBL requires the DNS Resolver (Unbound) to be used as the DNS service.<br />
-			When a DNS request is made for a Domain that is listed in DNSBL, the request is redirected to the Virtual IP address<br />
-			where an instance of Lighttpd Web Server will collect the packet statistics and push a \'1x1\' GIF image to the Browser.<br />
-			If the blocked domain is a root domain, a customizable Blocked Webpage will be displayed to the user.<br /><br />
-
-			If browsing is slow, check for Firewall LAN Rules/Limiters that might be blocking access to the DNSBL VIP.<br /><br />
-
-			<span class="text-danger">Note: </span>
-			DNSBL will block and <u>partially</u> log Alerts for HTTPS requests.
-			To debug issues with \'False Positives\', the following tools below can be used:<br />
-			<ol>
-				<li>Browser Dev mode (F12) and goto \'Console\' to review any error messages.</li>
-				<li>Execute the following command from pfSense Shell (Changing the interface \'re1\' to the pfSense Lan Interface):<br />
-					&emsp;<strong>tcpdump -nnvli re1 port 53 | grep -B1 \'A 10.10.10.1\'</strong></li>
-				<li>Packet capture software such as Wireshark.</li>
-			</ol>
-		</div>';
-
-$section->addInput(new Form_Checkbox(
-	'pfb_dnsbl',
-	gettext('DNSBL'),
-	'Enable DNSBL',
-	$pconfig['pfb_dnsbl'] === 'on' ? true:false,
-	'on'
-))->setHelp('This will enable DNS Block List for Malicious and/or unwanted Adverts Domains<br />'
-		. 'To Utilize, <strong>Unbound DNS Resolver</strong> must be enabled. Also ensure that pfBlockerNG is enabled.'
-		. "{$dnsbl_text}"
-);
-
-$dnsbl_text = 'This is an <strong>Advanced process</strong> to determine if all Sub-Domains should be wildcard blocked for each listed Domain.<br />
-		<span class="text-danger">Click infoblock</span> before enabling this feature!&emsp;
-		<div id="dnsbl_unbound_tld_info" class="infoblock">
-
-		<span class="dnsbl_unbound_tld"><strong>This Feature is not recommended for Low-Perfomance/Low-Memory installations!</strong><br /></span>
-		<strong>Definition: TLD</strong> -
-		&emsp;represents the last segment of a domain name. IE: example.com (TLD = com), example.uk.com (TLD = uk.com)<br /><br />
-
-		<span class="dnsbl_unbound_tld">The \'Unbound Resolver Reloads\' can take several seconds or more to complete and may temporarily interrupt
-		DNS Resolution until the Resolver has been fully Reloaded with the updated Domain changes.
-		Consider updating the DNSBL Feeds <strong>\'Once per Day\'</strong>, if network issues arise.<br /><br /></span>
-
-		When enabled and after all downloads for DNSBL Feeds have completed; TLD will process the Domains.<br />
-		TLD uses a predetermined list of TLDs, to determine if the listed Domains should be wildcard blocked (Block all sub-Domains).<br />
-		The predetermined TLD list can be found in &emsp;<u>/usr/local/pkg/pfblockerng/dnsbl_tld</u><br /><br />
-
-		To exclude a TLD/Domain from the TLD process, add the TLD/Domain to the <strong>TLD Exclusion</strong> custom list:<br />
-		&#8226&emsp;This only excludes the domain from the TLD process, it doesn\'t whitelist the domain.<br />
-		&#8226&emsp;Only the specific Sub-Domains/Domains listed in the DNSBL Feeds will be blocked.<br />
-		&#8226&emsp;A Force Reload - DNSBL, is required after manually adding to the TLD Exclusion<br /><br />
-		<strong>Note:</strong>
-		&emsp;Whitelisting a "sub-Domain" for a TLD Blocked "Domain" in the <strong>Custom Domain Whitelist</strong>
-		will not whitelist a TLD Wildcard Blocked domain!<br />
-		&emsp;&emsp;&emsp;&emsp;Either add the domain to the TLD Exclusion, or wildcard Whitelist the whole domain.<br /><br />
-
-		<strong>TLD Blacklist</strong>, can be used to block whole TLDs. &emsp;IE: <strong>xyz</strong><br />
-		<span class="dnsbl_unbound_tld"><strong>TLD Whitelist</strong> is <strong><u>only</u></strong> used in conjunction with
-		<strong> TLD Blacklist</strong> and is used to allow access to a Domain that is being blocked by a TLD Blacklist.<br /><br /></span>
-
-		When Enabling/Disabling this option, a <strong>Force Reload - DNSBL</strong> is required.<br /><br />
-
-		<span class="dnsbl_unbound_tld">Once the TLD Domain limit below is exceeded, the balance of the Domains will be listed as-is.
-		IE: Blocking only the listed Domain (Not Sub-Domains)<br /><strong>TLD Domain Limit Restrictions:</strong><br />
-		<ul>
-			<li>< 1.0GB RAM - Max 100k Domains</li>
-			<li>< 1.5GB RAM - Max 150k Domains</li>
-			<li>< 2.0GB RAM - Max 200k Domains</li>
-			<li>< 2.5GB RAM - Max 250k Domains</li>
-			<li>< 3.0GB RAM - Max 400k Domains</li>
-			<li>< 4.0GB RAM - Max 600k Domains</li>
-			<li>< 5.0GB RAM - Max 1.0M Domains</li>
-			<li>< 6.0GB RAM - Max 1.5M Domains</li>
-			<li>< 7.0GB RAM - Max 2.5M Domains</li>
-			<li>> 7.0GB RAM - > 2.5M Domains</li>
-		</ul></span>
-	</div>';
-
-$section->addInput(new Form_Select(
-	'dnsbl_mode',
-	gettext('DNSBL Mode'),
-	$pconfig['dnsbl_mode'],
-	$options_dnsbl_mode
-))->setHelp('Select the DNSBL mode.&emsp;'
-		. '<div class="infoblock">'
-		. '<strong>Unbound Mode</strong>:<br />'
-		. '&emsp;&emsp;&emsp;&emsp;This mode will utilize Unbound local-zone/local-data entries for DNSBL (requires more memory).<br />'
-		. '<strong>Unbound Python Mode</strong>:<br />'
-		. '&emsp;&emsp;&emsp;&emsp;This mode is only available for pfSense version 2.4.5 and above.<br />'
-		. '&emsp;&emsp;&emsp;&emsp;This mode will utilize the python integration of Unbound for DNSBL.<br />'
-		. '&emsp;&emsp;&emsp;&emsp;This mode will allow logging of DNS Replies, and more advanced DNSBL Blocking features.<br />'
-		. '&emsp;&emsp;&emsp;&emsp;This mode requires substantially less memory </div>'
-);
-
-$section->addInput(new Form_Checkbox(
-	'pfb_tld',
-	gettext('Wildcard Blocking (TLD)'),
-	'Enable',
-	$pconfig['pfb_tld'] === 'on' ? true:false,
-	'on'
-))->setHelp($dnsbl_text);
-
-$section->addInput(new Form_Checkbox(
-	'pfb_control',
-	gettext('Python Control') . '(py)',
-	'Enable',
-	$pconfig['pfb_control'] === 'on' ? true:false,
-	'on'
-))->setHelp('Enabling this option will allow sending python_control commands (via DNS TXT) to the Python integration.'
-	. '<div class="infoblock" style="width: 90%;">'
-	. 'The python_control feature is limited to DNS TXT records sent from pfSense localhost (127.0.0.1) only!<br />'
-	. 'This is a temporary intervention, and will be reset on a restart of the Resolver<br />'
-	. 'These commands can be incorporated in CRON/Scheduler tasks or run manually as required<br />'
-	. 'All events are logged to the Reports Tab (Gear icon)<br /><br />'
-	. '<strong>Command Syntax:</strong><br />'
-	. '<table class="table table-bordered table-striped table-hover table-compact">'
-	. '	<thead>'
-	. '		<tr>'
-	. '			<th style="max-width: 10%">Description</th>'
-	. '			<th style="max-width: 85%">Command</th>'
-	. '			<th style="max-width: 5%">Notes</th>'
-	. '		</tr>'
-	. '	</thead>'
-	. '	<tbody>'
-	. '		<tr><td>Enable DNSBL</td><td>drill TXT python_control.enable</td><td></td></tr>'
-	. '		<tr><td>Disable DNSBL</td><td>drill TXT python_control.disable</td><td></td></tr>'
-	. '		<tr><td>Disable DNSBL for duration</td><td>drill TXT python_control.disable.seconds</td><td>Seconds: 1-3600</td></tr>'
-	. '		<tr><td>Add a Global bypass IP</td><td>drill TXT python_control.addbypass.1-2-3-4</td><td>Use "-" in place of "."</td></tr>'
-	. '		<tr><td>Add a Global bypass IP for duration</td><td>drill TXT python_control.addbypass.1-2-3-4.seconds</td><td>Seconds: 1-3600</td></tr>'
-	. '		<tr><td>Remove a Global bypass IP</td><td>;drill TXT python_control.removebypass.1-2-3-4</td><td>Use "-" in place of "."</td></tr>'
-	. '	</tbody>'
-	. '</table>'
-	. '</div>');
-
-$section->addInput(new Form_Checkbox(
-	'pfb_py_reply',
-	gettext('DNS Reply Logging') . '(py)',
-	'Enable',
-	$pconfig['pfb_py_reply'] === 'on' ? true:false,
-	'on'
-))->setHelp('Enable the logging of all DNS Replies that were not blocked via DNSBL.');
-
-$section->addInput(new Form_Checkbox(
-	'pfb_py_block',
-	gettext('DNSBL Blocking') . '(py)',
-	'Enable',
-	$pconfig['pfb_py_block'] === 'on' ? true:false,
-	'on'
-))->setHelp('Enable the DNSBL python blocking mode.<div class="infoblock">'
-	. '<strong>DNSBL python blocking order</strong>:<br /><br />'
-	. '1) DNSBL python blocking mode option (Block any domains listed in the Feeds via DNSBL/TLD/DNSBL_TLD)<br />'
-	. '2) TLD Allow option (Only allow these TLDs to the next validation steps)<br />'
-	. '3) IDN Blocking option (Block any IDN domain or IDNs in punycode (ascii) format)<br />'
-	. '4) Regex Blocking option (User defined regular expression rules)<br /><br />'
-	. 'Blocked events (#2-4) will be <strong title="Utilizes 0.0.0.0 instead of the DNSBL VIP">Null Blocked</strong> and reported in the python log</div>'
-);
-
-$section->addInput(new Form_Checkbox(
-	'pfb_dnsbl_sync',
-	gettext('Resolver Live Sync'),
-	'Enable',
-	$pconfig['pfb_dnsbl_sync'] === 'on' ? true:false,
-	'on'
-))->setHelp('When enabled, updates to the DNS Resolver DNSBL database will be performed Live without reloading the Resolver.<br />'
-	. 'This will allow for more frequent DNSBL Updates (ie: Hourly) without losing DNS Resolution.<br />'
-	. 'This option is not required when DNSBL python blocking mode is enabled.<br />'
-	. '<span class="text-danger">Note:</span> A Force Reload will run a full Reload of Unbound');
-
-$section->addInput(new Form_Checkbox(
-	'pfb_hsts',
-	gettext('HSTS mode') . '(py)',
-	'Enable',
-	$pconfig['pfb_hsts'] === 'on' ? true:false,
-	'on'
-))->setHelp('Enable the DNSBL python <strong title="Utilizes 0.0.0.0 instead of the DNSBL VIP">Null Block mode</strong> for HSTS domains.<br />'
-	. 'Blocked domains that are in the <a target=_"blank" href="https://hstspreload.org/">HSTS preload</a> browser'
-	. ' <a target=_"blank" href="https://raw.githubusercontent.com/chromium/chromium/master/net/http/transport_security_state_static.json">list</a>'
-	. ' will use the Null Block Mode which *may* prevent Browser Certificate Errors.<br />'
-	. '<span class="text-danger">Note:</span> This option will not block HSTS domains, unless those Domains are added via the Feeds/Customlists.'
-);
-
+// TLD data. Defined before the GUI block so $tld_total is in scope for the
+// TLD Allow help text below -- the reorganisation moved that control above
+// where these arrays used to sit, which made the count unrenderable there.
 
 $tld_list = array();
 
 $tld_list['gTLD'] = array(
-'com' => 'COM* [149,657,691]',
-'net' => 'NET* [15,033,024]',
-'org' => 'ORG* [11,435,695]',
-'edu' => 'EDU* [7,470]',
-'info' => 'INFO [6,598,400]',
-'top' => 'TOP [4,054,352]',
-'xyz' => 'XYZ [2,574,052]',
-'biz' => 'BIZ [2,526,989]',
-'loan' => 'LOAN [2,247,507]',
-'club' => 'CLUB [1,696,900]',
-'online' => 'ONLINE [1,263,447]',
-'site' => 'SITE [1,056,019]',
-'vip' => 'VIP [789,039]',
-'ltd' => 'LTD [728,146]',
-'shop' => 'SHOP [611,909]',
-'win' => 'WIN [585,396]',
-'mobi' => '(s) MOBI [456,722]',
-'men' => 'MEN [419,738]',
-'icu' => 'ICU [400,885]',
-'app' => '(s) APP [357,664]',
-'website' => 'WEBSITE [338,254]',
-'pro' => 'PRO [337,195]',
-'space' => 'SPACE [331,935]',
-'stream' => 'STREAM [319,026]',
-'live' => 'LIVE [315,146]',
-'wang' => 'WANG [314,891]',
-'ooo' => 'OOO [313,861]',
-'asia' => '(s) ASIA [293,486]',
-'store' => 'STORE [266,600]',
-'review' => 'REVIEW [261,201]',
-'tech' => 'TECH [257,404]',
-'life' => 'LIFE [228,176]',
-'fun' => 'FUN [220,554]',
-'blog' => 'BLOG [203,890]',
-'cloud' => 'CLOUD [190,577]',
-'trade' => 'TRADE [183,643]',
-'xin' => 'XIN (HiChina) [181,417]',
-'world' => 'WORLD [146,086]',
-'host' => 'HOST [140,599]',
-'name' => 'NAME [138,702]',
-'download' => 'DOWNLOAD [126,393]',
-'party' => 'PARTY [122,932]',
-'today' => 'TODAY [115,480]',
-'link' => 'LINK [114,350]',
-'cat' => '(s) CAT [114,058]',
-'rocks' => 'ROCKS [112,659]',
-'ren' => 'REN [105,562]',
-'ink' => 'INK [96,853]',
-'science' => 'SCIENCE [95,819]',
-'xxx' => '(s) XXX [93,139]',
-'design' => 'DESIGN [91,689]',
-'solutions' => 'SOLUTIONS [91,210]',
-'email' => 'EMAIL [89,381]',
-'tel' => '(s) TEL [85,247]',
-'racing' => 'RACING [81,760]',
-'london' => '(eu) LONDON [81,647]',
-'services' => 'SERVICES [79,374]',
-'one' => 'ONE [77,774]',
-'group' => 'GROUP [74,396]',
-'company' => 'COMPANY [74,050]',
-'nyc' => '(na) NYC [72,512]',
-'agency' => 'AGENCY [69,267]',
-'news' => 'NEWS [68,258]',
-'guru' => 'GURU [67,798]',
-'accountant' => 'ACCOUNTANT [64,327]',
-'business' => 'BUSINESS [63,099]',
-'faith' => 'FAITH [62,665]',
-'webcam' => 'WEBCAM [60,654]',
-'network' => 'NETWORK [55,634]',
-'berlin' => '(eu) BERLIN [55,555]',
-'photography' => 'PHOTOGRAPHY [55,260]',
-'click' => 'CLICK [52,054]',
-'global' => 'GLOBAL [50,301]',
-'realtor' => 'REALTOR [48,823]',
-'media' => 'MEDIA [48,757]',
-'studio' => 'STUDIO [48,541]',
-'press' => 'PRESS [48,070]',
-'jobs' => '(s) JOBS [46,762]',
-'art' => 'ART [44,811]',
-'center' => 'CENTER [43,477]',
-'technology' => 'TECHNOLOGY [40,419]',
-'digital' => 'DIGITAL [38,904]',
-'expert' => 'EXPERT [37,333]',
-'ninja' => 'NINJA [37,251]',
-'tips' => 'TIPS [34,474]',
-'bayern' => '(eu) BAYERN [33,954]',
-'sale' => 'SALE [32,675]',
-'city' => 'CITY [32,350]',
-'amsterdam' => '(eu) AMSTERDAM [31,843]',
-'red' => 'RED [31,790]',
-'love' => 'LOVE (Merchant Law Group) [31,654]',
-'systems' => 'SYSTEMS [31,371]',
-'academy' => 'ACADEMY [31,073]',
-'wedding' => 'WEDDING [30,890]',
-'koeln' => '(eu) KOELN [29,465]',
-'market' => 'MARKET [29,354]',
-'international' => 'INTERNATIONAL [27,475]',
-'aero' => '(s) AERO [27,425]',
-'zone' => 'ZONE [27,017]',
-'consulting' => 'CONSULTING [26,981]',
-'social' => 'SOCIAL [26,253]',
-'cricket' => 'CRICKET [25,881]',
-'events' => 'EVENTS [25,666]',
-'team' => 'TEAM [25,420]',
-'church' => 'CHURCH [25,243]',
-'support' => 'SUPPORT [25,071]',
-'education' => 'EDUCATION [24,697]',
-'hamburg' => '(eu) HAMBURG [24,531]',
-'pub' => 'PUB [24,366]',
-'photos' => 'PHOTOS [22,978]',
-'care' => 'CARE [22,594]',
-'marketing' => 'MARKETING [22,396]',
-'boston' => '(na) BOSTON [22,334]',
-'kim' => 'KIM [22,086]',
-'paris' => '(eu) PARIS [21,767]',
-'vegas' => '(na) VEGAS [21,698]',
-'moscow' => '(eu) MOSCOW [21,694]',
-'coffee' => 'COFFEE [21,222]',
-'house' => 'HOUSE [21,012]',
-'nrw' => '(eu) NRW [20,656]',
-'kiwi' => '(oc) KIWI [20,358]',
-'video' => 'VIDEO [20,297]',
-'gmbh' => '(de) GMBH [20,290]',
-'africa' => '(af) AFRICA [20,276]',
-'reviews' => 'REVIEWS [20,165]',
-'training' => 'TRAINING [20,014]',
-'bet' => 'BET [19,996]',
-'family' => 'FAMILY [19,735]',
-'wiki' => 'WIKI [19,627]',
-'travel' => '(s) TRAVEL [19,614]',
-'realestate' => 'REALESTATE [19,596]',
-'directory' => 'DIRECTORY [19,453]',
-'photo' => 'PHOTO [19,409]',
-'gallery' => 'GALLERY [19,383]',
-'cool' => 'COOL [19,308]',
-'guide' => 'GUIDE [18,987]',
-'works' => 'WORKS [18,557]',
-'swiss' => '(eu) SWISS [18,196]',
-'bike' => 'BIKE [17,924]',
-'games' => 'GAMES [17,777]',
-'immo' => '(it) IMMO [17,774]',
-'bio' => 'BIO [17,515]',
-'uno' => '(es) UNO [16,973]',
-'cash' => 'CASH [16,888]',
-'cafe' => 'CAFE [16,739]',
-'land' => 'LAND [16,645]',
-'farm' => 'FARM [16,559]',
-'fit' => 'FIT [16,439]',
-'miami' => '(na) MIAMI [15,928]',
-'software' => 'SOFTWARE [15,711]',
-'properties' => 'PROPERTIES [15,658]',
-'wien' => '(eu) WIEN [15,656]',
-'run' => 'RUN [15,586]',
-'capital' => 'CAPITAL [15,518]',
-'coach' => 'COACH [15,442]',
-'fund' => 'FUND [15,201]',
-'community' => 'COMMUNITY [15,068]',
-'frl' => '(eu) FRL [15,055]',
-'wine' => 'WINE [14,904]',
-'band' => 'BAND [14,487]',
-'fashion' => 'FASHION [14,172]',
-'help' => 'HELP [14,080]',
-'fyi' => 'FYI [14,056]',
-'blue' => 'BLUE [13,911]',
-'school' => 'SCHOOL [13,857]',
-'foundation' => 'FOUNDATION [13,843]',
-'wales' => '(eu) WALES [13,787]',
-'legal' => 'LEGAL [13,769]',
-'wtf' => 'WTF [13,587]',
-'exchange' => 'EXCHANGE [13,501]',
-'beer' => 'BEER [13,335]',
-'istanbul' => '(eu) ISTANBUL [13,218]',
-'chat' => 'CHAT [13,115]',
-'tools' => 'TOOLS [13,040]',
-'plus' => 'PLUS [13,013]',
-'rentals' => 'RENTALS [12,927]',
-'ventures' => 'VENTURES [12,900]',
-'clothing' => 'CLOTHING [12,802]',
-'lawyer' => 'LAWYER [12,713]',
-'direct' => 'DIRECT [12,605]',
-'money' => 'MONEY [12,465]',
-'dog' => 'DOG [12,424]',
-'style' => 'STYLE [12,376]',
-'institute' => 'INSTITUTE [12,369]',
-'scot' => '(eu) SCOT [12,283]',
-'energy' => 'ENERGY [12,167]',
-'management' => 'MANAGEMENT [11,786]',
-'law' => 'LAW [11,784]',
-'pet' => 'PET [11,633]',
-'fitness' => 'FITNESS [11,606]',
-'tours' => 'TOURS [11,381]',
-'buzz' => 'BUZZ [10,992]',
-'porn' => 'PORN [10,811]',
-'ist' => '(eu) IST [10,759]',
-'cologne' => '(eu) COLOGNE [10,704]',
-'gold' => 'GOLD [10,599]',
-'earth' => 'EARTH [10,541]',
-'estate' => 'ESTATE [10,498]',
-'show' => 'SHOW [10,376]',
-'melbourne' => '(oc) MELBOURNE [10,358]',
-'jetzt' => '(de) JETZT [10,089]',
-'ruhr' => '(eu) RUHR [10,062]',
-'sydney' => '(oc) SYDNEY [10,000]',
-'golf' => 'GOLF [9,830]',
-'yoga' => 'YOGA [9,821]',
-'boutique' => 'BOUTIQUE [9,813]',
-'watch' => 'WATCH [9,736]',
-'pictures' => 'PICTURES [9,602]',
-'healthcare' => 'HEALTHCARE [9,465]',
-'deals' => 'DEALS [9,393]',
-'eus' => '(eu) EUS [9,392]',
-'restaurant' => 'RESTAURANT [9,280]',
-'health' => 'HEALTH [9,263]',
-'quebec' => '(na) QUEBEC [9,254]',
-'finance' => 'FINANCE [9,007]',
-'moe' => 'MOE [8,876]',
-'adult' => 'ADULT [8,870]',
-'codes' => 'CODES [8,611]',
-'sport' => 'SPORT (Global Assoc. of Sports Fed.) [8,582]',
-'express' => 'EXPRESS [8,460]',
-'bzh' => '(af) BZH [8,365]',
-'page' => 'PAGE [8,279]',
-'clinic' => 'CLINIC [8,218]',
-'sex' => 'SEX [8,186]',
-'dental' => 'DENTAL [8,175]',
-'pink' => 'PINK [8,168]',
-'coop' => '(s) COOP [8,115]',
-'partners' => 'PARTNERS [8,110]',
-'careers' => 'CAREERS [8,040]',
-'sucks' => 'SUCKS [8,000]',
-'attorney' => 'ATTORNEY [7,988]',
-'reisen' => '(de) REISEN [7,958]',
-'dance' => 'DANCE [7,932]',
-'lol' => 'LOL [7,810]',
-'productions' => 'PRODUCTIONS [7,773]',
-'brussels' => '(eu) BRUSSELS [7,694]',
-'kaufen' => '(de) KAUFEN [7,679]',
-'cymru' => '(eu) CYMRU [7,668]',
-'graphics' => 'GRAPHICS [7,567]',
-'shopping' => 'SHOPPING [7,490]',
-'construction' => 'CONSTRUCTION [7,489]',
-'vision' => 'VISION [7,488]',
-'repair' => 'REPAIR [7,454]',
-'university' => 'UNIVERSITY [7,441]',
-'sexy' => 'SEXY [7,399]',
-'nagoya' => '(asia) NAGOYA [7,380]',
-'solar' => 'SOLAR [7,330]',
-'pizza' => 'PIZZA [7,315]',
-'promo' => 'PROMO [7,307]',
-'kitchen' => 'KITCHEN [7,218]',
-'immobilien' => '(de) IMMOBILIEN [7,189]',
-'domains' => 'DOMAINS [7,138]',
-'cam' => 'CAM [7,108]',
-'pics' => 'PICS [7,074]',
-'enterprises' => 'ENTERPRISES [7,065]',
-'report' => 'REPORT [7,063]',
-'tax' => 'TAX [6,941]',
-'vet' => 'VET [6,923]',
-'taxi' => 'TAXI [6,807]',
-'engineering' => 'ENGINEERING [6,710]',
-'camp' => 'CAMP [6,600]',
-'lighting' => 'LIGHTING [6,526]',
-'place' => 'PLACE [6,521]',
-'vlaanderen' => '(eu) VLAANDEREN [6,498]',
-'tirol' => '(eu) TIROL [6,478]',
-'cards' => 'CARDS [6,456]',
-'delivery' => 'DELIVERY [6,415]',
-'casa' => '(it) CASA [6,413]',
-'audio' => 'AUDIO [6,358]',
-'parts' => 'PARTS [6,264]',
-'gift' => 'GIFT [6,258]',
-'haus' => '(de) HAUS [6,205]',
-'bar' => 'BAR [6,169]',
-'holdings' => 'HOLDINGS [6,075]',
-'yokohama' => '(asia) YOKOHAMA [6,044]',
-'limited' => 'LIMITED [5,995]',
-'equipment' => 'EQUIPMENT [5,970]',
-'barcelona' => '(eu) BARCELONA [5,919]',
-'vin' => 'VIN [5,870]',
-'gov' => 'GOV [5,838]',
-'holiday' => 'HOLIDAY [5,680]',
-'menu' => 'MENU [5,664]',
-'credit' => 'CREDIT [5,655]',
-'football' => 'FOOTBALL [5,642]',
-'ski' => 'SKI [5,636]',
-'computer' => 'COMPUTER [5,605]',
-'srl' => 'SRL (InterNetx) [5,595]',
-'financial' => 'FINANCIAL [5,506]',
-'supply' => 'SUPPLY [5,414]',
-'doctor' => 'DOCTOR [5,413]',
-'shoes' => 'SHOES [5,387]',
-'green' => 'GREEN [5,360]',
-'toys' => 'TOYS [5,186]',
-'insure' => 'INSURE [5,184]',
-'casino' => 'CASINO [5,150]',
-'investments' => 'INVESTMENTS [5,119]',
-'gal' => '(eu) GAL [5,050]',
-'gratis' => '(es) GRATIS [5,001]',
-'capetown' => '(af) CAPETOWN [4,990]',
-'rent' => 'RENT [4,933]',
-'recipes' => 'RECIPES [4,885]',
-'fish' => 'FISH [4,825]',
-'camera' => 'CAMERA [4,778]',
-'llc' => 'LLC [4,710]',
-'onl' => 'ONL [4,658]',
-'best' => 'BEST [4,638]',
-'black' => 'BLACK [4,581]',
-'discount' => 'DISCOUNT [4,577]',
-'schule' => '(de) SCHULE [4,536]',
-'vacations' => 'VACATIONS [4,493]',
-'auction' => 'AUCTION [4,442]',
-'industries' => 'INDUSTRIES [4,393]',
-'mortgage' => 'MORTGAGE [4,314]',
-'hosting' => 'HOSTING [4,301]',
-'irish' => '(eu) IRISH [4,252]',
-'gifts' => 'GIFTS [4,236]',
-'film' => 'FILM [4,233]',
-'fail' => 'FAIL [4,208]',
-'saarland' => '(eu) SAARLAND [4,206]',
-'builders' => 'BUILDERS [4,200]',
-'contractors' => 'CONTRACTORS [4,155]',
-'build' => 'BUILD [4,154]',
-'apartments' => 'APARTMENTS [4,082]',
-'town' => 'TOWN [4,066]',
-'property' => 'PROPERTY [4,023]',
-'college' => 'COLLEGE [3,987]',
-'okinawa' => '(asia) OKINAWA [3,965]',
-'catering' => 'CATERING [3,924]',
-'organic' => 'ORGANIC [3,921]',
-'taipei' => '(asia) TAIPEI [3,892]',
-'singles' => 'SINGLES [3,886]',
-'glass' => 'GLASS [3,866]',
-'associates' => 'ASSOCIATES [3,848]',
-'dentist' => 'DENTIST [3,817]',
-'cheap' => 'CHEAP [3,804]',
-'jewelry' => 'JEWELRY [3,792]',
-'mba' => 'MBA [3,758]',
-'poker' => 'POKER [3,746]',
-'moda' => '(it) MODA [3,736]',
-'bargains' => 'BARGAINS [3,692]',
-'rip' => 'RIP [3,677]',
-'exposed' => 'EXPOSED [3,611]',
-'gent' => '(eu) GENT [3,579]',
-'lat' => '(s) LAT [3,536]',
-'supplies' => 'SUPPLIES [3,456]',
-'dating' => 'DATING [3,433]',
-'joburg' => '(af) JOBURG [3,407]',
-'cab' => 'CAB [3,396]',
-'soccer' => 'SOCCER [3,370]',
-'ngo' => 'NGO [3,295]',
-'ong' => 'ONG [3,284]',
-'engineer' => 'ENGINEER [3,193]',
-'vote' => 'VOTE [3,166]',
-'luxe' => '(fr) LUXE [3,135]',
-'voyage' => 'VOYAGE [3,109]',
-'movie' => 'MOVIE [3,108]',
-'plumbing' => 'PLUMBING [3,103]',
-'accountants' => 'ACCOUNTANTS [2,993]',
-'claims' => 'CLAIMS [2,986]',
-'tube' => 'TUBE [2,965]',
-'futbol' => '(es) FUTBOL [2,942]',
-'bank' => 'BANK [2,878]',
-'ceo' => 'CEO [2,843]',
-'surf' => 'SURF [2,839]',
-'tienda' => '(es) TIENDA [2,818]',
-'degree' => 'DEGREE [2,778]',
-'diamonds' => 'DIAMONDS [2,774]',
-'coupons' => 'COUPONS [2,738]',
-'reise' => '(de) REISE [2,699]',
-'feedback' => 'FEEDBACK [2,652]',
-'cleaning' => 'CLEANING [2,592]',
-'radio' => 'RADIO [2,587]',
-'furniture' => 'FURNITURE [2,568]',
-'mom' => 'MOM [2,561]',
-'realty' => 'REALTY [2,545]',
-'lgbt' => 'LGBT [2,530]',
-'archi' => 'ARCHI [2,504]',
-'horse' => 'HORSE [2,484]',
-'florist' => 'FLORIST [2,471]',
-'flights' => 'FLIGHTS [2,458]',
-'durban' => '(af) DURBAN [2,425]',
-'how' => 'HOW [2,425]',
-'limo' => 'LIMO [2,409]',
-'cruises' => 'CRUISES [2,386]',
-'salon' => 'SALON (Outer Orchard LLC) [2,379]',
-'actor' => 'ACTOR [2,352]',
-'eco' => 'ECO [2,337]',
-'army' => 'ARMY [2,269]',
-'fan' => 'FAN [2,256]',
-'garden' => 'GARDEN [2,252]',
-'tattoo' => 'TATTOO [2,227]',
-'condos' => 'CONDOS [2,168]',
-'game' => 'GAME [2,122]',
-'bot' => 'BOT [2,121]',
-'alsace' => '(eu) ALSACE [2,117]',
-'courses' => 'COURSES [2,113]',
-'diet' => 'DIET [2,108]',
-'rest' => 'REST [2,104]',
-'villas' => 'VILLAS [2,070]',
-'versicherung' => '(de) VERSICHERUNG [2,038]',
-'surgery' => 'SURGERY [2,028]',
-'lease' => 'LEASE [1,966]',
-'viajes' => '(es) VIAJES [1,947]',
-'gives' => 'GIVES [1,845]',
-'homes' => 'HOMES [1,845]',
-'rehab' => 'REHAB [1,821]',
-'fans' => 'FANS [1,812]',
-'tennis' => 'TENNIS [1,797]',
-'cooking' => 'COOKING [1,761]',
-'mil' => 'MIL [1,661]',
-'fishing' => 'FISHING [1,637]',
-'hospital' => 'HOSPITAL [1,616]',
-'vodka' => 'VODKA [1,596]',
-'christmas' => 'CHRISTMAS [1,580]',
-'soy' => '(es) SOY [1,516]',
-'hockey' => 'HOCKEY [1,479]',
-'bible' => 'BIBLE [1,473]',
-'study' => 'STUDY [1,457]',
-'bingo' => 'BINGO [1,447]',
-'flowers' => 'FLOWERS [1,427]',
-'theater' => 'THEATER [1,374]',
-'corsica' => '(eu) CORSICA [1,353]',
-'career' => 'CAREER [1,333]',
-'charity' => 'CHARITY [1,321]',
-'gripe' => 'GRIPE [1,317]',
-'blackfriday' => 'BLACKFRIDAY [1,289]',
-'physio' => 'PHYSIO [1,233]',
-'tires' => 'TIRES [1,227]',
-'gop' => 'GOP [1,217]',
-'democrat' => 'DEMOCRAT [1,135]',
-'tickets' => 'TICKETS [1,124]',
-'trading' => 'TRADING [1,118]',
-'rio' => '(s) RIO [1,114]',
-'guitars' => 'GUITARS [1,113]',
-'maison' => '(fr) MAISON [1,084]',
-'observer' => 'OBSERVER [1,054]',
-'republican' => 'REPUBLICAN [1,015]',
-'sarl' => 'SARL [997]',
-'creditcard' => 'CREDITCARD [970]',
-'hiphop' => 'HIPHOP [932]',
-'voting' => 'VOTING [891]',
-'luxury' => 'LUXURY [891]',
-'tatar' => '(asia) TATAR [885]',
-'markets' => 'MARKETS [879]',
-'navy' => 'NAVY [857]',
-'juegos' => '(es) JUEGOS [831]',
-'kyoto' => '(asia) KYOTO [818]',
-'memorial' => 'MEMORIAL [777]',
-'ltda' => '(es) LTDA [736]',
-'hoteles' => '(es) HOTELES [682]',
-'osaka' => '(asia) OSAKA [676]',
-'airforce' => 'AIRFORCE [663]',
-'baby' => 'BABY [657]',
-'abudhabi' => '(asia) SABUDHABI [633]',
-'museum' => '(s) MUSEUM [585]',
-'ryukyu' => '(asia) RYUKYU [556]',
-'storage' => 'STORAGE [555]',
-'pharmacy' => 'PHARMACY [537]',
-'krd' => '(asia) KRD [518]',
-'rodeo' => 'RODEO [496]',
-'qpon' => 'QPON [481]',
-'boats' => 'BOATS [467]',
-'auto' => 'AUTO [436]',
-'car' => 'CAR [375]',
-'dev' => 'DEV [375]',
-'voto' => '(it) VOTO [347]',
-'hiv' => 'HIV [339]',
-'cars' => 'CARS [336]',
-'abogado' => '(es) ABOGADO [334]',
-'security' => 'SECURITY [279]',
-'broadway' => 'BROADWAY [268]',
-'moi' => '(fr) MOI [253]',
-'insurance' => 'INSURANCE [249]',
-'rugby' => 'RUGBY [239]',
-'makeup' => 'MAKEUP [229]',
-'yachts' => 'YACHTS [210]',
-'int' => '(s) INT [204]',
-'reit' => 'REIT [126]',
-'theatre' => 'THEATRE [113]',
-'whoswho' => 'WHOSWHO [106]',
-'rich' => 'RICH [91]',
-'cancerresearch' => 'CANCERRESEARCH [85]',
-'protection' => 'PROTECTION [84]',
-'motorcycles' => 'MOTORCYCLES [75]',
-'lotto' => 'LOTTO [72]',
-'post' => '(s) POST [71]',
-'autos' => 'AUTOS [71]',
-'trust' => 'TRUST [53]',
-'new' => 'NEW [45]',
-'kpn' => 'KPN (KPN) [43]',
-'nowruz' => 'NOWRUZ (Asia Green IT) [42]',
-'aws' => 'AWS [40]',
-'foo' => 'FOO [31]',
-'stockholm' => '(eu) STOCKHOLM [28]',
-'wed' => 'WED [20]',
-'inc' => 'INC (Uniregistry) [14]',
-'catholic' => 'CATHOLIC [13]',
-'ice' => 'ICE [10]',
-'skin' => 'SKIN [8]',
-'active' => 'ACTIVE [8]',
-'arte' => '(fr) ARTE [8]',
-'meet' => 'MEET [7]',
-'spreadbetting' => 'SPREADBETTING [7]',
-'ismaili' => 'ISMAILI (Fondation Aga Khan) [6]',
-'forum' => 'FORUM [6]',
-'dubai' => '(asia) DUBAI [5]',
-'cfd' => 'CFD [5]',
-'pay' => 'PAY [5]',
-'madrid' => '(eu) MADRID [4]',
-'med' => 'MED [4]',
-'now' => 'NOW [3]',
-'duck' => 'DUCK [3]',
-'analytics' => 'ANALYTICS [3]',
-'here' => 'HERE [3]',
-'book' => 'BOOK [3]',
-'boo' => 'BOO [2]',
-'ads' => 'ADS [2]',
-'ubank' => 'UBANK (Bank Of Australia) [2]',
-'you' => 'YOU [2]',
-'hot' => 'HOT [2]',
-'barefoot' => 'BAREFOOT [2]',
-'frontdoor' => 'FRONTDOOR [2]',
-'docs' => 'DOCS [2]',
-'free' => 'FREE [2]',
-'travelersinsurance' => 'TRAVELERSINSURANCE [2]',
-'box' => 'BOX [2]',
-'fly' => 'FLY [2]',
-'esq' => 'ESQ [2]',
-'vuelos' => '(es) VUELOS [2]',
-'channel' => 'CHANNEL [2]',
-'eat' => 'EAT [2]',
-'dad' => 'DAD [2]',
-'day' => 'DAY [2]',
-'imamat' => 'IMAMAT (Fondation Aga Khan) [2]',
-'fast' => 'FAST [2]',
-'ing' => 'ING [2]',
-'meme' => 'MEME [2]',
-'prof' => 'PROF [2]',
-'rsvp' => '(fr) RSVP [2]',
-'mov' => 'MOV [2]',
-'passagens' => 'PASSAGENS [2]',
-'kosher' => 'KOSHER (Kosher Marketing) [1]',
-'bestbuy' => 'BESTBUY [1]',
-'author' => 'AUTHOR [1]',
-'xihuan' => '(de) XIHUAN [1]',
-'pars' => 'PARS (Asia Green) [1]',
-'wow' => 'WOW [1]',
-'safe' => 'SAFE [1]',
-'origins' => 'ORIGINS [1]',
-'baseball' => 'BASEBALL [1]',
-'winners' => 'WINNERS [1]',
-'bcn' => '(eu) BCN [1]',
-'beauty' => 'BEAUTY [1]',
-'blockbuster' => 'BLOCKBUSTER [1]',
-'phone' => 'PHONE [1]',
-'open' => 'OPEN [1]',
-'weibo' => '(cn) WEIBO [1]',
-'off' => 'OFF [1]',
-'save' => 'SAVE [1]',
-'scholarships' => 'SCHOLARSHIPS [1]',
-'weather' => 'WEATHER [1]',
-'watches' => 'WATCHES [1]',
-'homesense' => 'HOMESENSE [1]',
-'wanggou' => '(cn) WANGGOU [1]',
-'search' => 'SEARCH [1]',
-'audible' => 'AUDIBLE [1]',
-'pid' => 'PID [1]',
-'secure' => 'SECURE [1]',
-'tkmaxx' => 'TKMAXX (TJX Companies) [1]',
-'bom' => 'BOM [1]',
-'toronto' => 'TORONTO [1]',
-'hotels' => 'HOTELS [1]',
-'shia' => 'SHIA (Asia Green) [1]',
-'phd' => 'PHD (Charleston Road Registry) [1]',
-'loft' => 'LOFT (Anco Inc.) [1]',
-'prime' => 'PRIME [1]',
-'viva' => 'VIVA (Saudi Tele - CentralNic) [1]',
-'vana' => 'VANA (Lifetyle Domain Holdings) [1]',
-'pin' => 'PIN [1]',
-'tjmaxx' => 'TJMAXX (TJX Companies) [1]',
-'arab' => '(asia) ARAB [1]',
-'tiaa' => 'TIAA (Teachers Insurance & Assoc) [1]',
-'srt' => 'SRT (FCA US LLC) [1]',
-'samsclub' => 'SAMSCLUB (Walmart) [1]',
-'ril' => 'RIL (Reliance Industries) [1]',
-'rightathome' => 'RIGHTATHOME (Johnson & Johnson) [1]',
-'zuerich' => '(eu) ZUERICH [1]',
-'room' => 'ROOM [1]',
-'zero' => 'ZERO [1]',
-'yun' => 'YUN (QIHOO-Security) [1]',
-'joy' => 'JOY [1]',
-'anquan' => 'ANQUAN (QIHOO-Security) [1]',
-'budapest' => '(eu) BUDAPEST [1]',
-'buy' => 'BUY [1]',
-'talk' => 'TALK [1]',
-'living' => 'LIVING [1]',
-'dot' => 'DOT [1]',
-'drive' => 'DRIVE [1]',
-'map' => 'MAP [1]',
-'sling' => 'SLING [1]',
-'smile' => 'SMILE [1]',
-'epost' => '(de) EPOST [1]',
-'locker' => 'LOCKER [1]',
-'read' => 'READ [1]',
-'final' => 'FINAL [1]',
-'fire' => 'FIRE [1]',
-'song' => 'SONG [1]',
-'silk' => 'SILK [1]',
-'like' => 'LIKE [1]',
-'food' => 'FOOD [1]',
-'foodnetwork' => 'FOODNETWORK [1]',
-'lifeinsurance' => 'LIFEINSURANCE [1]',
-'spot' => 'SPOT [1]',
-'latino' => 'LATINO [1]',
-'got' => 'GOT (Amazon) [1]',
-'grocery' => 'GROCERY [1]',
-'hair' => 'HAIR [1]',
-'hangout' => 'HANGOUT [1]',
-'helsinki' => '(eu) HELSINKI [1]',
-'doha' => '(asia) DOHA [1]',
-'diy' => 'DIY [1]',
-'call' => 'CALL [1]',
-'contact' => 'CONTACT [1]',
-'select' => 'SELECT [1]',
-'jot' => 'JOT (Amazon) [1]',
-'mobily' => 'MOBILY [1]',
-'mobile' => 'MOBILE [1]',
-'mls' => 'MLS (Canada Real Estate Assoc.) [1]',
-'cipriani' => 'CIPRIANI [1]',
-'circle' => 'CIRCLE [1]',
-'cityeats' => 'CITYEATS [1]',
-'clinique' => '(fr) CLINIQUE [1]',
-'compare' => 'COMPARE [1]',
-'case' => 'CASE [1]',
-'deal' => 'DEAL [1]',
-'coupon' => 'COUPON [1]',
-'cruise' => 'CRUISE [1]',
-'mint' => 'MINT [1]',
-'data' => 'DATA [1]',
-'shouji' => '(cn) SHOUJI [1]',
-'uconnect' => 'UCONNECT [1]',
-'tushu' => '(cn) TUSHU [1]',
-'tunes' => 'TUNES [1]',
-'dds' => 'DDS (Dr. Dental Surgery) [1]',
-'homegoods' => 'HOMEGOODS [1]',
-'showtime' => 'SHOWTIME [1]',
-'boots' => 'BOOTS [Unknown]',
-'country' => 'COUNTRY [Unknown]',
-'work' => '( ! ) WORK [637,305]',
-'gdn' => '( ! ) GDN [356,076]',
-'bid' => '( ! ) BID [320,198]',
-'date' => '( ! ) DATE [155,569]',
-'tokyo' => '( ! ) (asia) TOKYO [140,188]',
-'loans' => '( ! ) LOANS [4,828]'
+'abogado' => '(es) ABOGADO',
+'abudhabi' => '(asia) SABUDHABI',
+'academy' => 'ACADEMY',
+'accountant' => 'ACCOUNTANT',
+'accountants' => 'ACCOUNTANTS',
+'actor' => 'ACTOR',
+'ads' => 'ADS',
+'adult' => 'ADULT',
+'aero' => '(s) AERO',
+'africa' => '(af) AFRICA',
+'agency' => 'AGENCY',
+'airforce' => 'AIRFORCE',
+'alsace' => '(eu) ALSACE',
+'amazon' => 'AMAZON',
+'amsterdam' => '(eu) AMSTERDAM',
+'analytics' => 'ANALYTICS',
+'anquan' => 'ANQUAN (QIHOO-Security)',
+'apartments' => 'APARTMENTS',
+'app' => '(s) APP',
+'arab' => '(asia) ARAB',
+'archi' => 'ARCHI',
+'army' => 'ARMY',
+'arpa' => 'ARPA',
+'art' => 'ART',
+'arte' => '(fr) ARTE',
+'asia' => '(s) ASIA',
+'associates' => 'ASSOCIATES',
+'attorney' => 'ATTORNEY',
+'auction' => 'AUCTION',
+'audible' => 'AUDIBLE',
+'audio' => 'AUDIO',
+'author' => 'AUTHOR',
+'auto' => 'AUTO',
+'autos' => 'AUTOS',
+'aws' => 'AWS',
+'baby' => 'BABY',
+'band' => 'BAND',
+'bank' => 'BANK',
+'bar' => 'BAR',
+'barcelona' => '(eu) BARCELONA',
+'barefoot' => 'BAREFOOT',
+'bargains' => 'BARGAINS',
+'baseball' => 'BASEBALL',
+'bayern' => '(eu) BAYERN',
+'bcn' => '(eu) BCN',
+'beauty' => 'BEAUTY',
+'beer' => 'BEER',
+'berlin' => '(eu) BERLIN',
+'best' => 'BEST',
+'bestbuy' => 'BESTBUY',
+'bet' => 'BET',
+'bible' => 'BIBLE',
+'bid' => '( ! ) BID',
+'bike' => 'BIKE',
+'bingo' => 'BINGO',
+'bio' => 'BIO',
+'biz' => 'BIZ',
+'black' => 'BLACK',
+'blackfriday' => 'BLACKFRIDAY',
+'blockbuster' => 'BLOCKBUSTER',
+'blog' => 'BLOG',
+'blue' => 'BLUE',
+'boats' => 'BOATS',
+'bom' => 'BOM',
+'boo' => 'BOO',
+'book' => 'BOOK',
+'boston' => '(na) BOSTON',
+'bot' => 'BOT',
+'boutique' => 'BOUTIQUE',
+'box' => 'BOX',
+'broadway' => 'BROADWAY',
+'brussels' => '(eu) BRUSSELS',
+'build' => 'BUILD',
+'builders' => 'BUILDERS',
+'business' => 'BUSINESS',
+'buy' => 'BUY',
+'buzz' => 'BUZZ',
+'bzh' => '(af) BZH',
+'cab' => 'CAB',
+'cafe' => 'CAFE',
+'call' => 'CALL',
+'cam' => 'CAM',
+'camera' => 'CAMERA',
+'camp' => 'CAMP',
+'capetown' => '(af) CAPETOWN',
+'capital' => 'CAPITAL',
+'car' => 'CAR',
+'cards' => 'CARDS',
+'care' => 'CARE',
+'career' => 'CAREER',
+'careers' => 'CAREERS',
+'cars' => 'CARS',
+'casa' => '(it) CASA',
+'case' => 'CASE',
+'cash' => 'CASH',
+'casino' => 'CASINO',
+'cat' => '(s) CAT',
+'catering' => 'CATERING',
+'catholic' => 'CATHOLIC',
+'center' => 'CENTER',
+'ceo' => 'CEO',
+'cfd' => 'CFD',
+'channel' => 'CHANNEL',
+'charity' => 'CHARITY',
+'chat' => 'CHAT',
+'cheap' => 'CHEAP',
+'christmas' => 'CHRISTMAS',
+'church' => 'CHURCH',
+'cipriani' => 'CIPRIANI',
+'circle' => 'CIRCLE',
+'city' => 'CITY',
+'claims' => 'CLAIMS',
+'cleaning' => 'CLEANING',
+'click' => 'CLICK',
+'clinic' => 'CLINIC',
+'clinique' => '(fr) CLINIQUE',
+'clothing' => 'CLOTHING',
+'cloud' => 'CLOUD',
+'club' => 'CLUB',
+'coach' => 'COACH',
+'codes' => 'CODES',
+'coffee' => 'COFFEE',
+'college' => 'COLLEGE',
+'cologne' => '(eu) COLOGNE',
+'com' => 'COM*',
+'community' => 'COMMUNITY',
+'company' => 'COMPANY',
+'compare' => 'COMPARE',
+'computer' => 'COMPUTER',
+'condos' => 'CONDOS',
+'construction' => 'CONSTRUCTION',
+'consulting' => 'CONSULTING',
+'contact' => 'CONTACT',
+'contractors' => 'CONTRACTORS',
+'cooking' => 'COOKING',
+'cool' => 'COOL',
+'coop' => '(s) COOP',
+'corsica' => '(eu) CORSICA',
+'country' => 'COUNTRY',
+'coupon' => 'COUPON',
+'coupons' => 'COUPONS',
+'courses' => 'COURSES',
+'cpa' => 'CPA',
+'credit' => 'CREDIT',
+'creditcard' => 'CREDITCARD',
+'cricket' => 'CRICKET',
+'cruise' => 'CRUISE',
+'cruises' => 'CRUISES',
+'cymru' => '(eu) CYMRU',
+'dad' => 'DAD',
+'dance' => 'DANCE',
+'data' => 'DATA',
+'date' => '( ! ) DATE',
+'dating' => 'DATING',
+'day' => 'DAY',
+'dds' => 'DDS (Dr. Dental Surgery)',
+'deal' => 'DEAL',
+'deals' => 'DEALS',
+'degree' => 'DEGREE',
+'delivery' => 'DELIVERY',
+'democrat' => 'DEMOCRAT',
+'dental' => 'DENTAL',
+'dentist' => 'DENTIST',
+'desi' => 'DESI',
+'design' => 'DESIGN',
+'dev' => 'DEV',
+'diamonds' => 'DIAMONDS',
+'diet' => 'DIET',
+'digital' => 'DIGITAL',
+'direct' => 'DIRECT',
+'directory' => 'DIRECTORY',
+'discount' => 'DISCOUNT',
+'diy' => 'DIY',
+'docs' => 'DOCS',
+'doctor' => 'DOCTOR',
+'dog' => 'DOG',
+'domains' => 'DOMAINS',
+'dot' => 'DOT',
+'download' => 'DOWNLOAD',
+'drive' => 'DRIVE',
+'dubai' => '(asia) DUBAI',
+'durban' => '(af) DURBAN',
+'earth' => 'EARTH',
+'eat' => 'EAT',
+'eco' => 'ECO',
+'edu' => 'EDU*',
+'education' => 'EDUCATION',
+'email' => 'EMAIL',
+'energy' => 'ENERGY',
+'engineer' => 'ENGINEER',
+'engineering' => 'ENGINEERING',
+'enterprises' => 'ENTERPRISES',
+'equipment' => 'EQUIPMENT',
+'esq' => 'ESQ',
+'estate' => 'ESTATE',
+'eus' => '(eu) EUS',
+'events' => 'EVENTS',
+'exchange' => 'EXCHANGE',
+'expert' => 'EXPERT',
+'exposed' => 'EXPOSED',
+'express' => 'EXPRESS',
+'fail' => 'FAIL',
+'faith' => 'FAITH',
+'family' => 'FAMILY',
+'fan' => 'FAN',
+'fans' => 'FANS',
+'farm' => 'FARM',
+'fashion' => 'FASHION',
+'fast' => 'FAST',
+'feedback' => 'FEEDBACK',
+'film' => 'FILM',
+'final' => 'FINAL',
+'finance' => 'FINANCE',
+'financial' => 'FINANCIAL',
+'fire' => 'FIRE',
+'fish' => 'FISH',
+'fishing' => 'FISHING',
+'fit' => 'FIT',
+'fitness' => 'FITNESS',
+'flights' => 'FLIGHTS',
+'florist' => 'FLORIST',
+'flowers' => 'FLOWERS',
+'fly' => 'FLY',
+'foo' => 'FOO',
+'food' => 'FOOD',
+'football' => 'FOOTBALL',
+'forum' => 'FORUM',
+'foundation' => 'FOUNDATION',
+'free' => 'FREE',
+'frl' => '(eu) FRL',
+'fun' => 'FUN',
+'fund' => 'FUND',
+'furniture' => 'FURNITURE',
+'futbol' => '(es) FUTBOL',
+'fyi' => 'FYI',
+'gal' => '(eu) GAL',
+'gallery' => 'GALLERY',
+'game' => 'GAME',
+'games' => 'GAMES',
+'garden' => 'GARDEN',
+'gay' => 'GAY',
+'gdn' => '( ! ) GDN',
+'gent' => '(eu) GENT',
+'gift' => 'GIFT',
+'gifts' => 'GIFTS',
+'gives' => 'GIVES',
+'glass' => 'GLASS',
+'global' => 'GLOBAL',
+'gmbh' => '(de) GMBH',
+'gold' => 'GOLD',
+'golf' => 'GOLF',
+'gop' => 'GOP',
+'got' => 'GOT (Amazon)',
+'gov' => 'GOV',
+'graphics' => 'GRAPHICS',
+'gratis' => '(es) GRATIS',
+'green' => 'GREEN',
+'gripe' => 'GRIPE',
+'grocery' => 'GROCERY',
+'group' => 'GROUP',
+'guide' => 'GUIDE',
+'guitars' => 'GUITARS',
+'guru' => 'GURU',
+'hair' => 'HAIR',
+'hamburg' => '(eu) HAMBURG',
+'hangout' => 'HANGOUT',
+'haus' => '(de) HAUS',
+'health' => 'HEALTH',
+'healthcare' => 'HEALTHCARE',
+'help' => 'HELP',
+'here' => 'HERE',
+'hiphop' => 'HIPHOP',
+'hiv' => 'HIV',
+'hockey' => 'HOCKEY',
+'holdings' => 'HOLDINGS',
+'holiday' => 'HOLIDAY',
+'homegoods' => 'HOMEGOODS',
+'homes' => 'HOMES',
+'homesense' => 'HOMESENSE',
+'horse' => 'HORSE',
+'hospital' => 'HOSPITAL',
+'host' => 'HOST',
+'hosting' => 'HOSTING',
+'hot' => 'HOT',
+'hotels' => 'HOTELS',
+'house' => 'HOUSE',
+'how' => 'HOW',
+'ice' => 'ICE',
+'icu' => 'ICU',
+'imamat' => 'IMAMAT (Fondation Aga Khan)',
+'immo' => '(it) IMMO',
+'immobilien' => '(de) IMMOBILIEN',
+'inc' => 'INC (Uniregistry)',
+'industries' => 'INDUSTRIES',
+'info' => 'INFO',
+'ing' => 'ING',
+'ink' => 'INK',
+'institute' => 'INSTITUTE',
+'insurance' => 'INSURANCE',
+'insure' => 'INSURE',
+'int' => '(s) INT',
+'international' => 'INTERNATIONAL',
+'investments' => 'INVESTMENTS',
+'irish' => '(eu) IRISH',
+'ismaili' => 'ISMAILI (Fondation Aga Khan)',
+'ist' => '(eu) IST',
+'istanbul' => '(eu) ISTANBUL',
+'jetzt' => '(de) JETZT',
+'jewelry' => 'JEWELRY',
+'jobs' => '(s) JOBS',
+'joburg' => '(af) JOBURG',
+'jot' => 'JOT (Amazon)',
+'joy' => 'JOY',
+'juegos' => '(es) JUEGOS',
+'kaufen' => '(de) KAUFEN',
+'kids' => 'KIDS',
+'kim' => 'KIM',
+'kitchen' => 'KITCHEN',
+'kiwi' => '(oc) KIWI',
+'koeln' => '(eu) KOELN',
+'kosher' => 'KOSHER (Kosher Marketing)',
+'kpn' => 'KPN (KPN)',
+'krd' => '(asia) KRD',
+'kyoto' => '(asia) KYOTO',
+'land' => 'LAND',
+'lat' => '(s) LAT',
+'latino' => 'LATINO',
+'law' => 'LAW',
+'lawyer' => 'LAWYER',
+'lease' => 'LEASE',
+'legal' => 'LEGAL',
+'lgbt' => 'LGBT',
+'life' => 'LIFE',
+'lifeinsurance' => 'LIFEINSURANCE',
+'lighting' => 'LIGHTING',
+'like' => 'LIKE',
+'limited' => 'LIMITED',
+'limo' => 'LIMO',
+'link' => 'LINK',
+'live' => 'LIVE',
+'living' => 'LIVING',
+'llc' => 'LLC',
+'llp' => 'LLP',
+'loan' => 'LOAN',
+'loans' => '( ! ) LOANS',
+'locker' => 'LOCKER',
+'lol' => 'LOL',
+'london' => '(eu) LONDON',
+'lotto' => 'LOTTO',
+'love' => 'LOVE (Merchant Law Group)',
+'ltd' => 'LTD',
+'ltda' => '(es) LTDA',
+'luxe' => '(fr) LUXE',
+'luxury' => 'LUXURY',
+'madrid' => '(eu) MADRID',
+'maison' => '(fr) MAISON',
+'makeup' => 'MAKEUP',
+'management' => 'MANAGEMENT',
+'map' => 'MAP',
+'market' => 'MARKET',
+'marketing' => 'MARKETING',
+'markets' => 'MARKETS',
+'mba' => 'MBA',
+'med' => 'MED',
+'media' => 'MEDIA',
+'meet' => 'MEET',
+'melbourne' => '(oc) MELBOURNE',
+'meme' => 'MEME',
+'memorial' => 'MEMORIAL',
+'men' => 'MEN',
+'menu' => 'MENU',
+'merck' => 'MERCK',
+'miami' => '(na) MIAMI',
+'mil' => 'MIL',
+'mint' => 'MINT',
+'mls' => 'MLS (Canada Real Estate Assoc.)',
+'mobi' => '(s) MOBI',
+'mobile' => 'MOBILE',
+'moda' => '(it) MODA',
+'moe' => 'MOE',
+'moi' => '(fr) MOI',
+'mom' => 'MOM',
+'money' => 'MONEY',
+'mortgage' => 'MORTGAGE',
+'moscow' => '(eu) MOSCOW',
+'motorcycles' => 'MOTORCYCLES',
+'mov' => 'MOV',
+'movie' => 'MOVIE',
+'museum' => '(s) MUSEUM',
+'music' => 'MUSIC',
+'nagoya' => '(asia) NAGOYA',
+'name' => 'NAME',
+'navy' => 'NAVY',
+'net' => 'NET*',
+'network' => 'NETWORK',
+'new' => 'NEW',
+'news' => 'NEWS',
+'ngo' => 'NGO',
+'ninja' => 'NINJA',
+'now' => 'NOW',
+'nowruz' => 'NOWRUZ (Asia Green IT)',
+'nrw' => '(eu) NRW',
+'nyc' => '(na) NYC',
+'observer' => 'OBSERVER',
+'okinawa' => '(asia) OKINAWA',
+'one' => 'ONE',
+'ong' => 'ONG',
+'onl' => 'ONL',
+'online' => 'ONLINE',
+'ooo' => 'OOO',
+'open' => 'OPEN',
+'org' => 'ORG*',
+'organic' => 'ORGANIC',
+'origins' => 'ORIGINS',
+'osaka' => '(asia) OSAKA',
+'page' => 'PAGE',
+'paris' => '(eu) PARIS',
+'pars' => 'PARS (Asia Green)',
+'partners' => 'PARTNERS',
+'parts' => 'PARTS',
+'party' => 'PARTY',
+'pay' => 'PAY',
+'pet' => 'PET',
+'pharmacy' => 'PHARMACY',
+'phd' => 'PHD (Charleston Road Registry)',
+'phone' => 'PHONE',
+'photo' => 'PHOTO',
+'photography' => 'PHOTOGRAPHY',
+'photos' => 'PHOTOS',
+'physio' => 'PHYSIO',
+'pics' => 'PICS',
+'pictures' => 'PICTURES',
+'pid' => 'PID',
+'pin' => 'PIN',
+'pink' => 'PINK',
+'pizza' => 'PIZZA',
+'place' => 'PLACE',
+'plumbing' => 'PLUMBING',
+'plus' => 'PLUS',
+'poker' => 'POKER',
+'porn' => 'PORN',
+'post' => '(s) POST',
+'press' => 'PRESS',
+'prime' => 'PRIME',
+'pro' => 'PRO',
+'productions' => 'PRODUCTIONS',
+'prof' => 'PROF',
+'promo' => 'PROMO',
+'properties' => 'PROPERTIES',
+'property' => 'PROPERTY',
+'protection' => 'PROTECTION',
+'pub' => 'PUB',
+'qpon' => 'QPON',
+'quebec' => '(na) QUEBEC',
+'racing' => 'RACING',
+'radio' => 'RADIO',
+'read' => 'READ',
+'realestate' => 'REALESTATE',
+'realtor' => 'REALTOR',
+'realty' => 'REALTY',
+'recipes' => 'RECIPES',
+'red' => 'RED',
+'rehab' => 'REHAB',
+'reise' => '(de) REISE',
+'reisen' => '(de) REISEN',
+'reit' => 'REIT',
+'ren' => 'REN',
+'rent' => 'RENT',
+'rentals' => 'RENTALS',
+'repair' => 'REPAIR',
+'report' => 'REPORT',
+'republican' => 'REPUBLICAN',
+'rest' => 'REST',
+'restaurant' => 'RESTAURANT',
+'review' => 'REVIEW',
+'reviews' => 'REVIEWS',
+'rich' => 'RICH',
+'ril' => 'RIL (Reliance Industries)',
+'rio' => '(s) RIO',
+'rip' => 'RIP',
+'rocks' => 'ROCKS',
+'rodeo' => 'RODEO',
+'room' => 'ROOM',
+'rsvp' => '(fr) RSVP',
+'rugby' => 'RUGBY',
+'ruhr' => '(eu) RUHR',
+'run' => 'RUN',
+'ryukyu' => '(asia) RYUKYU',
+'saarland' => '(eu) SAARLAND',
+'safe' => 'SAFE',
+'sale' => 'SALE',
+'salon' => 'SALON (Outer Orchard LLC)',
+'samsclub' => 'SAMSCLUB (Walmart)',
+'sarl' => 'SARL',
+'save' => 'SAVE',
+'scholarships' => 'SCHOLARSHIPS',
+'school' => 'SCHOOL',
+'schule' => '(de) SCHULE',
+'science' => 'SCIENCE',
+'scot' => '(eu) SCOT',
+'search' => 'SEARCH',
+'secure' => 'SECURE',
+'security' => 'SECURITY',
+'select' => 'SELECT',
+'services' => 'SERVICES',
+'sex' => 'SEX',
+'sexy' => 'SEXY',
+'shia' => 'SHIA (Asia Green)',
+'shiksha' => 'SHIKSHA',
+'shoes' => 'SHOES',
+'shop' => 'SHOP',
+'shopping' => 'SHOPPING',
+'shouji' => '(cn) SHOUJI',
+'show' => 'SHOW',
+'silk' => 'SILK',
+'singles' => 'SINGLES',
+'site' => 'SITE',
+'ski' => 'SKI',
+'skin' => 'SKIN',
+'sling' => 'SLING',
+'smile' => 'SMILE',
+'soccer' => 'SOCCER',
+'social' => 'SOCIAL',
+'software' => 'SOFTWARE',
+'solar' => 'SOLAR',
+'solutions' => 'SOLUTIONS',
+'song' => 'SONG',
+'soy' => '(es) SOY',
+'spa' => 'SPA',
+'space' => 'SPACE',
+'sport' => 'SPORT (Global Assoc. of Sports Fed.)',
+'spot' => 'SPOT',
+'srl' => 'SRL (InterNetx)',
+'stockholm' => '(eu) STOCKHOLM',
+'storage' => 'STORAGE',
+'store' => 'STORE',
+'stream' => 'STREAM',
+'studio' => 'STUDIO',
+'study' => 'STUDY',
+'style' => 'STYLE',
+'sucks' => 'SUCKS',
+'supplies' => 'SUPPLIES',
+'supply' => 'SUPPLY',
+'support' => 'SUPPORT',
+'surf' => 'SURF',
+'surgery' => 'SURGERY',
+'swiss' => '(eu) SWISS',
+'sydney' => '(oc) SYDNEY',
+'systems' => 'SYSTEMS',
+'taipei' => '(asia) TAIPEI',
+'talk' => 'TALK',
+'tatar' => '(asia) TATAR',
+'tattoo' => 'TATTOO',
+'tax' => 'TAX',
+'taxi' => 'TAXI',
+'team' => 'TEAM',
+'tech' => 'TECH',
+'technology' => 'TECHNOLOGY',
+'tel' => '(s) TEL',
+'tennis' => 'TENNIS',
+'theater' => 'THEATER',
+'theatre' => 'THEATRE',
+'tiaa' => 'TIAA (Teachers Insurance & Assoc)',
+'tickets' => 'TICKETS',
+'tienda' => '(es) TIENDA',
+'tips' => 'TIPS',
+'tires' => 'TIRES',
+'tirol' => '(eu) TIROL',
+'tjmaxx' => 'TJMAXX (TJX Companies)',
+'tkmaxx' => 'TKMAXX (TJX Companies)',
+'today' => 'TODAY',
+'tokyo' => '( ! ) (asia) TOKYO',
+'tools' => 'TOOLS',
+'top' => 'TOP',
+'tours' => 'TOURS',
+'town' => 'TOWN',
+'toys' => 'TOYS',
+'trade' => 'TRADE',
+'trading' => 'TRADING',
+'training' => 'TRAINING',
+'travel' => '(s) TRAVEL',
+'travelersinsurance' => 'TRAVELERSINSURANCE',
+'trust' => 'TRUST',
+'tube' => 'TUBE',
+'tunes' => 'TUNES',
+'tushu' => '(cn) TUSHU',
+'ubank' => 'UBANK (Bank Of Australia)',
+'university' => 'UNIVERSITY',
+'uno' => '(es) UNO',
+'vacations' => 'VACATIONS',
+'vana' => 'VANA (Lifetyle Domain Holdings)',
+'vegas' => '(na) VEGAS',
+'ventures' => 'VENTURES',
+'versicherung' => '(de) VERSICHERUNG',
+'vet' => 'VET',
+'viajes' => '(es) VIAJES',
+'video' => 'VIDEO',
+'villas' => 'VILLAS',
+'vin' => 'VIN',
+'vip' => 'VIP',
+'vision' => 'VISION',
+'viva' => 'VIVA (Saudi Tele - CentralNic)',
+'vlaanderen' => '(eu) VLAANDEREN',
+'vodka' => 'VODKA',
+'vote' => 'VOTE',
+'voting' => 'VOTING',
+'voto' => '(it) VOTO',
+'voyage' => 'VOYAGE',
+'wales' => '(eu) WALES',
+'wang' => 'WANG',
+'wanggou' => '(cn) WANGGOU',
+'watch' => 'WATCH',
+'watches' => 'WATCHES',
+'weather' => 'WEATHER',
+'web' => 'WEB',
+'webcam' => 'WEBCAM',
+'website' => 'WEBSITE',
+'wed' => 'WED',
+'wedding' => 'WEDDING',
+'weibo' => '(cn) WEIBO',
+'whoswho' => 'WHOSWHO',
+'wien' => '(eu) WIEN',
+'wiki' => 'WIKI',
+'win' => 'WIN',
+'wine' => 'WINE',
+'winners' => 'WINNERS',
+'work' => '( ! ) WORK',
+'works' => 'WORKS',
+'world' => 'WORLD',
+'wow' => 'WOW',
+'wtf' => 'WTF',
+'xihuan' => '(de) XIHUAN',
+'xin' => 'XIN (HiChina)',
+'xxx' => '(s) XXX',
+'xyz' => 'XYZ',
+'yachts' => 'YACHTS',
+'yoga' => 'YOGA',
+'yokohama' => '(asia) YOKOHAMA',
+'you' => 'YOU',
+'yun' => 'YUN (QIHOO-Security)',
+'zero' => 'ZERO',
+'zone' => 'ZONE',
+'zuerich' => '(eu) ZUERICH'
 );
 
 $tld_list['ccTLD'] = array(
-'de' => 'DE* (Germany) [15,083,400]',
-'uk' => 'UK* (United Kingdom) [11,160,534]',
-'co' => 'CO* (Colombia) [2,508,814]',
-'io' => 'IO* (British Indian Ocean Territory) [500,566]',
-'sk' => 'SK* (Slovakia) [405,693]',
-'ch' => 'CH* (Switzerland) [188,608]',
-'lt' => 'LT* (Lithuania) [177,780]',
-'to' => 'TO* (Tonga) [20,011]',
-'ms' => 'MS* (Montserrat) [9,674]',
-'cn' => 'CN (China) [14,150,248]',
-'ru' => 'RU (Russia) [5,470,742]',
-'nl' => 'NL (Netherlands) [5,351,802]',
-'tk' => 'TK (Tokelau) [4,212,624]',
-'eu' => 'EU (European Union) [3,902,598]',
-'br' => 'BR (Brazil) [3,795,680]',
-'fr' => 'FR (France) [3,434,038]',
-'au' => 'AU (Australia) [3,042,212]',
-'it' => 'IT (Italy) [2,983,600]',
-'ca' => 'CA (Canada) [2,832,331]',
-'pl' => 'PL (Poland) [2,633,768]',
-'us' => 'US (United States) [2,408,864]',
-'tw' => 'TW (Taiwan) [2,334,182]',
-'in' => 'IN (India) [2,172,108]',
-'es' => 'ES (Spain) [2,004,044]',
-'se' => 'SE (Sweden) [1,811,235]',
-'be' => 'BE (Belgium) [1,561,224]',
-'jp' => 'JP (Japan) [1,470,648]',
-'dk' => 'DK (Denmark) [1,352,931]',
-'at' => 'AT (Austria) [1,304,138]',
-'cz' => 'CZ (Czechia) [1,282,735]',
-'za' => 'ZA (South Africa) [1,214,396]',
-'kr' => 'KR (South Korea) [1,065,746]',
-'cc' => 'CC (Cocos Islands) [1,055,955]',
-'me' => 'ME (Montenegro) [1,009,376]',
-'ir' => 'IR (Iran) [931,857]',
-'mx' => 'MX (Mexico) [877,362]',
-'hu' => 'HU (Hungary) [754,710]',
-'no' => 'NO (Norway) [731,580]',
-'nz' => 'NZ (New Zealand) [722,124]',
-'ro' => 'RO (Romania) [652,713]',
-'ua' => 'UA (Ukraine) [600,008]',
-'pw' => 'PW (Palau) [551,240]',
-'tv' => 'TV (Tuvalu) [499,095]',
-'cl' => 'CL (Chile) [472,126]',
-'fi' => 'FI (Finland) [459,959]',
-'nu' => 'NU (Niue) [458,978]',
-'vn' => 'VN (Vietnam) [453,169]',
-'ar' => 'AR (Argentina) [444,819]',
-'gr' => 'GR (Greece) [407,259]',
-'tr' => 'TR (Turkey) [377,632]',
-'pt' => 'PT (Portugal) [297,891]',
-'id' => 'ID (Indonesia) [284,584]',
-'hk' => 'HK (Hong Kong) [277,407]',
-'ie' => 'IE (Ireland) [261,631]',
-'il' => 'IL (Israel) [247,990]',
-'my' => 'MY (Malaysia) [211,207]',
-'sg' => 'SG (Singapore) [188,546]',
-'ae' => 'AE (United Arab Emirates) [185,235]',
-'ws' => 'WS (Samoa) [168,465]',
-'kz' => 'KZ (Kazakhstan) [149,056]',
-'by' => 'BY (Belarus) [130,955]',
-'si' => 'SI (Slovenia) [122,905]',
-'ee' => 'EE (Estonia) [120,573]',
-'su' => 'SU [119,464]',
-'lv' => 'LV (Latvia) [116,839]',
-'ng' => 'NG (Nigeria) [112,463]',
-'rs' => 'RS (Serbia) [107,435]',
-'pe' => 'PE (Peru) [101,466]',
-'hr' => 'HR (Croatia) [100,940]',
-'ve' => 'VE (Venezuela) [93,627]',
-'ph' => 'PH (Philippines) [93,543]',
-'lu' => 'LU (Luxembourg) [86,301]',
-'ke' => 'KE (Kenya) [82,010]',
-'th' => 'TH (Thailand) [72,067]',
-'uy' => 'UY (Uruguay) [71,589]',
-'ma' => 'MA (Morocco) [69,951]',
-'uz' => 'UZ (Uzbekistan) [67,209]',
-'np' => 'NP (Nepal) [63,877]',
-'is' => 'IS (Iceland) [63,663]',
-'bg' => 'BG (Bulgaria) [62,004]',
-'sa' => 'SA (Saudi Arabia) [52,624]',
-'ai' => 'AI (Anguilla) [47,626]',
-'hm' => 'HM (Heard Island and McDonald Islands) [45,517]',
-'ec' => 'EC (Ecuador) [42,785]',
-'la' => 'LA (Laos) [42,573]',
-'bd' => 'BD (Bangladesh) [42,453]',
-'tn' => 'TN (Tunisia) [42,393]',
-'li' => 'LI (Liechtenstein) [41,601]',
-'zw' => 'ZW (Zimbabwe) [35,076]',
-'am' => 'AM (Armenia) [34,906]',
-'ge' => 'GE (Georgia) [33,826]',
-'bz' => 'BZ (Belize) [32,336]',
-'im' => 'IM (Isle of Man) [31,849]',
-'cm' => 'CM (Cameroon) [31,181]',
-'lk' => 'LK (Sri Lanka) [31,086]',
-'mk' => 'MK (Macedonia) [27,976]',
-'re' => 'RE (Reunion) [27,141]',
-'az' => 'AZ (Azerbaijan) [26,274]',
-'do' => 'DO (Dominican Republic) [25,917]',
-'vc' => 'VC (Saint Vincent and the Grenadines) [23,983]',
-'md' => 'MD (Moldova) [23,888]',
-'pk' => 'PK (Pakistan) [23,847]',
-'ba' => 'BA (Bosnia and Herzegovina) [22,334]',
-'al' => 'AL (Albania) [21,863]',
-'py' => 'PY (Paraguay) [20,828]',
-'ag' => 'AG (Antigua and Barbuda) [18,924]',
-'qa' => 'QA (Qatar) [18,678]',
-'ac' => 'AC (Ascention Island) [18,537]',
-'mt' => 'MT (Malta) [17,792]',
-'fm' => 'FM (Micronesia) [17,697]',
-'gg' => 'GG (Guernsey) [17,601]',
-'mn' => 'MN (Mongolia) [17,557]',
-'gt' => 'GT (Guatemala) [17,457]',
-'cr' => 'CR (Costa Rica) [17,261]',
-'tz' => 'TZ (Tanzania) [16,651]',
-'ly' => 'LY (Libya) [15,240]',
-'cy' => 'CY (Cyprus) [15,147]',
-'as' => 'AS (American Samoa) [14,643]',
-'st' => 'ST (Sao Tome and Principe) [13,923]',
-'cx' => 'CX (Christmas Island) [13,881]',
-'gs' => 'GS (South Georgia and the South Sandwich Islands) [13,377]',
-'kg' => 'KG (Kyrgyzstan) [12,389]',
-'bo' => 'BO (Bolivia) [12,043]',
-'so' => 'SO (Somalia) [11,544]',
-'sh' => 'SH (Saint Helena) [11,542]',
-'sy' => 'SY (Syria) [9,960]',
-'tm' => 'TM (Turkmenistan) [9,657]',
-'mu' => 'MU (Mauritius) [9,538]',
-'ci' => 'CI (Ivory Coast) [8,820]',
-'sv' => 'SV (El Salvador) [8,775]',
-'eg' => 'EG (Egypt) [8,447]',
-'tc' => 'TC (Turks and Caicos Islands) [8,376]',
-'hn' => 'HN (Honduras) [8,205]',
-'ug' => 'UG (Uganda) [8,189]',
-'dz' => 'DZ (Algeria) [8,058]',
-'ps' => 'PS (Palestinian Territory) [7,595]',
-'dj' => 'DJ (Djibouti) [7,473]',
-'jm' => 'JM (Jamaica) [7,145]',
-'bw' => 'BW (Botswana) [7,013]',
-'ky' => 'KY (Cayman Islands) [6,837]',
-'pm' => 'PM (Saint Pierre and Miquelon) [6,703]',
-'tj' => 'TJ (Tajikistan) [6,019]',
-'mz' => 'MZ (Mozambique) [5,910]',
-'gl' => 'GL (Greenland) [5,781]',
-'nc' => 'NC (New Caledonia) [5,752]',
-'sc' => 'SC (Seychelles) [5,677]',
-'af' => 'AF (Afghanistan) [5,676]',
-'je' => 'JE (Jersey) [5,619]',
-'cd' => 'CD (Democratic Republic of the Congo) [5,600]',
-'sn' => 'SN (Senegal) [5,203]',
-'ao' => 'AO (Angola) [5,167]',
-'vg' => 'VG (British Virgin Islands) [5,068]',
-'pr' => 'PR (Puerto Rico) [5,040]',
-'zm' => 'ZM (Zambia) [5,033]',
-'mm' => 'MM (Myanmar) [4,600]',
-'na' => 'NA (Namibia) [4,466]',
-'jo' => 'JO (Jordan) [4,458]',
-'tt' => 'TT (Trinidad and Tobago) [4,447]',
-'lb' => 'LB (Lebanon) [4,419]',
-'fo' => 'FO (Faroe Islands) [4,415]',
-'mv' => 'MV (Maldives) [4,192]',
-'kw' => 'KW (Kuwait) [4,105]',
-'mg' => 'MG (Madagascar) [4,075]',
-'sd' => 'SD (Sudan) [3,980]',
-'rw' => 'RW (Rwanda) [3,948]',
-'gh' => 'GH (Ghana) [3,927]',
-'lc' => 'LC (Saint Lucia) [3,912]',
-'mc' => 'MC (Monaco) [3,627]',
-'kh' => 'KH (Cambodia) [3,612]',
-'om' => 'OM (Oman) [3,594]',
-'yt' => 'YT (Mayotte) [3,416]',
-'sx' => 'SX (Sint Maarten) [3,400]',
-'ax' => 'AX (Aland Islands) [3,226]',
-'gy' => 'GY (Guyana) [3,186]',
-'sr' => 'SR (Suriname) [3,172]',
-'tf' => 'TF (French Southern Territories) [3,084]',
-'bi' => 'BI (Burundi) [3,072]',
-'fj' => 'FJ (Fiji) [3,024]',
-'bm' => 'BM (Bermuda) [3,008]',
-'ht' => 'HT (Haiti) [2,876]',
-'mo' => 'MO (Macao) [2,862]',
-'gd' => 'GD (Grenada) [2,825]',
-'et' => 'ET (Ethiopia) [2,802]',
-'dm' => 'DM (Dominica) [2,593]',
-'bs' => 'BS (Bahamas) [2,584]',
-'pa' => 'PA (Panama) [2,473]',
-'gi' => 'GI (Gibraltar) [2,298]',
-'sm' => 'SM (San Marino) [2,273]',
-'bt' => 'BT (Bhutan) [2,217]',
-'bh' => 'BH (Bahrain) [2,214]',
-'gp' => 'GP (Guadeloupe) [2,206]',
-'pg' => 'PG (Papua New Guinea) [2,082]',
-'mw' => 'MW (Malawi) [2,017]',
-'cv' => 'CV (Cape Verde) [1,994]',
-'wf' => 'WF (Wallis and Futuna) [1,961]',
-'tg' => 'TG (Togo) [1,937]',
-'ad' => 'AD (Andorra) [1,908]',
-'sl' => 'SL (Sierra Leone) [1,772]',
-'pf' => 'PF (French Polynesia) [1,746]',
-'tl' => 'TL (East Timor) [1,739]',
-'vu' => 'VU (Vanuatu) [1,660]',
-'iq' => 'IQ (Iraq) [1,658]',
-'sz' => 'SZ (Swaziland) [1,614]',
-'ls' => 'LS (Lesotho) [1,605]',
-'gm' => 'GM (Gambia) [1,518]',
-'bb' => 'BB (Barbados) [1,500]',
-'cu' => 'CU (Cuba) [1,427]',
-'bf' => 'BF (Burkina Faso) [1,424]',
-'sb' => 'SB (Solomon Islands) [1,404]',
-'cg' => 'CG (Republic of the Congo) [1,389]',
-'bn' => 'BN (Brunei) [1,346]',
-'ck' => 'CK (Cook Islands) [1,325]',
-'bj' => 'BJ (Benin) [1,143]',
-'nf' => 'NF (Norfolk Island) [1,113]',
-'ye' => 'YE (Yemen) [1,066]',
-'vi' => 'VI (U.S. Virgin Islands) [1,017]',
-'cw' => 'CW (Curacao) [849]',
-'mr' => 'MR (Mauritania) [824]',
-'kn' => 'KN (Saint Kitts and Nevis) [788]',
-'mp' => 'MP (Northern Mariana Islands) [743]',
-'pn' => 'PN (Pitcairn) [673]',
-'aw' => 'AW (Aruba) [670]',
-'ne' => 'NE (Niger) [613]',
-'mq' => 'MQ (Martinique) [589]',
-'ki' => 'KI (Kiribati) [511]',
-'gf' => 'GF (French Guiana) [498]',
-'td' => 'TD (Chad) [370]',
-'lr' => 'LR (Liberia) [338]',
-'nr' => 'NR (Nauru) [309]',
-'gn' => 'GN (Guinea) [290]',
-'gw' => 'GW (Guinea-Bissau) [210]',
-'er' => 'ER (Eritrea) [113]',
-'km' => 'KM (Comoros) [109]',
-'aq' => 'AQ (Antarctica) [84]',
-'ni' => 'NI (Nicaragua) [64]',
-'gu' => 'GU (Guam) [45]',
-'va' => 'VA (Vatican) [36]',
-'kp' => 'KP (North Korea) [35]',
-'mh' => 'MH (Marshall Islands) [10]',
-'gb' => 'GB (United Kingdom) [1]',
-'ss' => 'SS (South Sudan) [Unknown]',
-'mf' => 'MF (Saint Martin) [Unknown]',
-'bv' => 'BV (Bouvet Island) [Unknown]',
-'eh' => 'EH (Western Sahara) [Unknown]',
-'bl' => 'BL (Saint Barthelemy) [Unknown]',
-'um' => 'UM (United States Minor Outlying Islands) [Unknown]',
-'sj' => 'SJ (Svalbard and Jan Mayen) [Unknown]',
-'fk' => 'FK (Falkland Islands) [Unknown]',
-'an' => 'AN (Netherlands Antilles)  [Unknown]',
-'bq' => 'BQ (Bonaire, Saint Eustatius and Saba ) [Unknown]',
-'ga' => '( ! ) GA (Gabon) [2,361,641]',
-'cf' => '( ! ) CF (Central African Republic) [1,822,686]',
-'gq' => '( ! ) GQ (Equatorial Guinea) [1,774,205]',
-'ml' => '( ! ) ML (Mali) [1,729,138]'
+'ac' => 'AC (Ascention Island)',
+'ad' => 'AD (Andorra)',
+'ae' => 'AE (United Arab Emirates)',
+'af' => 'AF (Afghanistan)',
+'ag' => 'AG (Antigua and Barbuda)',
+'ai' => 'AI (Anguilla)',
+'al' => 'AL (Albania)',
+'am' => 'AM (Armenia)',
+'ao' => 'AO (Angola)',
+'aq' => 'AQ (Antarctica)',
+'ar' => 'AR (Argentina)',
+'as' => 'AS (American Samoa)',
+'at' => 'AT (Austria)',
+'au' => 'AU (Australia)',
+'aw' => 'AW (Aruba)',
+'ax' => 'AX (Aland Islands)',
+'az' => 'AZ (Azerbaijan)',
+'ba' => 'BA (Bosnia and Herzegovina)',
+'bb' => 'BB (Barbados)',
+'bd' => 'BD (Bangladesh)',
+'be' => 'BE (Belgium)',
+'bf' => 'BF (Burkina Faso)',
+'bg' => 'BG (Bulgaria)',
+'bh' => 'BH (Bahrain)',
+'bi' => 'BI (Burundi)',
+'bj' => 'BJ (Benin)',
+'bm' => 'BM (Bermuda)',
+'bn' => 'BN (Brunei)',
+'bo' => 'BO (Bolivia)',
+'br' => 'BR (Brazil)',
+'bs' => 'BS (Bahamas)',
+'bt' => 'BT (Bhutan)',
+'bv' => 'BV (Bouvet Island)',
+'bw' => 'BW (Botswana)',
+'by' => 'BY (Belarus)',
+'bz' => 'BZ (Belize)',
+'ca' => 'CA (Canada)',
+'cc' => 'CC (Cocos Islands)',
+'cd' => 'CD (Democratic Republic of the Congo)',
+'cf' => '( ! ) CF (Central African Republic)',
+'cg' => 'CG (Republic of the Congo)',
+'ch' => 'CH* (Switzerland)',
+'ci' => 'CI (Ivory Coast)',
+'ck' => 'CK (Cook Islands)',
+'cl' => 'CL (Chile)',
+'cm' => 'CM (Cameroon)',
+'cn' => 'CN (China)',
+'co' => 'CO* (Colombia)',
+'cr' => 'CR (Costa Rica)',
+'cu' => 'CU (Cuba)',
+'cv' => 'CV (Cape Verde)',
+'cw' => 'CW (Curacao)',
+'cx' => 'CX (Christmas Island)',
+'cy' => 'CY (Cyprus)',
+'cz' => 'CZ (Czechia)',
+'de' => 'DE* (Germany)',
+'dj' => 'DJ (Djibouti)',
+'dk' => 'DK (Denmark)',
+'dm' => 'DM (Dominica)',
+'do' => 'DO (Dominican Republic)',
+'dz' => 'DZ (Algeria)',
+'ec' => 'EC (Ecuador)',
+'ee' => 'EE (Estonia)',
+'eg' => 'EG (Egypt)',
+'er' => 'ER (Eritrea)',
+'es' => 'ES (Spain)',
+'et' => 'ET (Ethiopia)',
+'eu' => 'EU (European Union)',
+'fi' => 'FI (Finland)',
+'fj' => 'FJ (Fiji)',
+'fk' => 'FK (Falkland Islands)',
+'fm' => 'FM (Micronesia)',
+'fo' => 'FO (Faroe Islands)',
+'fr' => 'FR (France)',
+'ga' => '( ! ) GA (Gabon)',
+'gb' => 'GB (United Kingdom)',
+'gd' => 'GD (Grenada)',
+'ge' => 'GE (Georgia)',
+'gf' => 'GF (French Guiana)',
+'gg' => 'GG (Guernsey)',
+'gh' => 'GH (Ghana)',
+'gi' => 'GI (Gibraltar)',
+'gl' => 'GL (Greenland)',
+'gm' => 'GM (Gambia)',
+'gn' => 'GN (Guinea)',
+'gp' => 'GP (Guadeloupe)',
+'gq' => '( ! ) GQ (Equatorial Guinea)',
+'gr' => 'GR (Greece)',
+'gs' => 'GS (South Georgia and the South Sandwich Islands)',
+'gt' => 'GT (Guatemala)',
+'gu' => 'GU (Guam)',
+'gw' => 'GW (Guinea-Bissau)',
+'gy' => 'GY (Guyana)',
+'hk' => 'HK (Hong Kong)',
+'hm' => 'HM (Heard Island and McDonald Islands)',
+'hn' => 'HN (Honduras)',
+'hr' => 'HR (Croatia)',
+'ht' => 'HT (Haiti)',
+'hu' => 'HU (Hungary)',
+'id' => 'ID (Indonesia)',
+'ie' => 'IE (Ireland)',
+'il' => 'IL (Israel)',
+'im' => 'IM (Isle of Man)',
+'in' => 'IN (India)',
+'io' => 'IO* (British Indian Ocean Territory)',
+'iq' => 'IQ (Iraq)',
+'ir' => 'IR (Iran)',
+'is' => 'IS (Iceland)',
+'it' => 'IT (Italy)',
+'je' => 'JE (Jersey)',
+'jm' => 'JM (Jamaica)',
+'jo' => 'JO (Jordan)',
+'jp' => 'JP (Japan)',
+'ke' => 'KE (Kenya)',
+'kg' => 'KG (Kyrgyzstan)',
+'kh' => 'KH (Cambodia)',
+'ki' => 'KI (Kiribati)',
+'km' => 'KM (Comoros)',
+'kn' => 'KN (Saint Kitts and Nevis)',
+'kp' => 'KP (North Korea)',
+'kr' => 'KR (South Korea)',
+'kw' => 'KW (Kuwait)',
+'ky' => 'KY (Cayman Islands)',
+'kz' => 'KZ (Kazakhstan)',
+'la' => 'LA (Laos)',
+'lb' => 'LB (Lebanon)',
+'lc' => 'LC (Saint Lucia)',
+'li' => 'LI (Liechtenstein)',
+'lk' => 'LK (Sri Lanka)',
+'lr' => 'LR (Liberia)',
+'ls' => 'LS (Lesotho)',
+'lt' => 'LT* (Lithuania)',
+'lu' => 'LU (Luxembourg)',
+'lv' => 'LV (Latvia)',
+'ly' => 'LY (Libya)',
+'ma' => 'MA (Morocco)',
+'mc' => 'MC (Monaco)',
+'md' => 'MD (Moldova)',
+'me' => 'ME (Montenegro)',
+'mg' => 'MG (Madagascar)',
+'mh' => 'MH (Marshall Islands)',
+'mk' => 'MK (Macedonia)',
+'ml' => '( ! ) ML (Mali)',
+'mm' => 'MM (Myanmar)',
+'mn' => 'MN (Mongolia)',
+'mo' => 'MO (Macao)',
+'mp' => 'MP (Northern Mariana Islands)',
+'mq' => 'MQ (Martinique)',
+'mr' => 'MR (Mauritania)',
+'ms' => 'MS* (Montserrat)',
+'mt' => 'MT (Malta)',
+'mu' => 'MU (Mauritius)',
+'mv' => 'MV (Maldives)',
+'mw' => 'MW (Malawi)',
+'mx' => 'MX (Mexico)',
+'my' => 'MY (Malaysia)',
+'mz' => 'MZ (Mozambique)',
+'na' => 'NA (Namibia)',
+'nc' => 'NC (New Caledonia)',
+'ne' => 'NE (Niger)',
+'nf' => 'NF (Norfolk Island)',
+'ng' => 'NG (Nigeria)',
+'ni' => 'NI (Nicaragua)',
+'nl' => 'NL (Netherlands)',
+'no' => 'NO (Norway)',
+'np' => 'NP (Nepal)',
+'nr' => 'NR (Nauru)',
+'nu' => 'NU (Niue)',
+'nz' => 'NZ (New Zealand)',
+'om' => 'OM (Oman)',
+'pa' => 'PA (Panama)',
+'pe' => 'PE (Peru)',
+'pf' => 'PF (French Polynesia)',
+'pg' => 'PG (Papua New Guinea)',
+'ph' => 'PH (Philippines)',
+'pk' => 'PK (Pakistan)',
+'pl' => 'PL (Poland)',
+'pm' => 'PM (Saint Pierre and Miquelon)',
+'pn' => 'PN (Pitcairn)',
+'pr' => 'PR (Puerto Rico)',
+'ps' => 'PS (Palestinian Territory)',
+'pt' => 'PT (Portugal)',
+'pw' => 'PW (Palau)',
+'py' => 'PY (Paraguay)',
+'qa' => 'QA (Qatar)',
+'re' => 'RE (Reunion)',
+'ro' => 'RO (Romania)',
+'rs' => 'RS (Serbia)',
+'ru' => 'RU (Russia)',
+'rw' => 'RW (Rwanda)',
+'sa' => 'SA (Saudi Arabia)',
+'sb' => 'SB (Solomon Islands)',
+'sc' => 'SC (Seychelles)',
+'sd' => 'SD (Sudan)',
+'se' => 'SE (Sweden)',
+'sg' => 'SG (Singapore)',
+'sh' => 'SH (Saint Helena)',
+'si' => 'SI (Slovenia)',
+'sj' => 'SJ (Svalbard and Jan Mayen)',
+'sk' => 'SK* (Slovakia)',
+'sl' => 'SL (Sierra Leone)',
+'sm' => 'SM (San Marino)',
+'sn' => 'SN (Senegal)',
+'so' => 'SO (Somalia)',
+'sr' => 'SR (Suriname)',
+'ss' => 'SS (South Sudan)',
+'st' => 'ST (Sao Tome and Principe)',
+'su' => 'SU',
+'sv' => 'SV (El Salvador)',
+'sx' => 'SX (Sint Maarten)',
+'sy' => 'SY (Syria)',
+'sz' => 'SZ (Swaziland)',
+'tc' => 'TC (Turks and Caicos Islands)',
+'td' => 'TD (Chad)',
+'tf' => 'TF (French Southern Territories)',
+'tg' => 'TG (Togo)',
+'th' => 'TH (Thailand)',
+'tj' => 'TJ (Tajikistan)',
+'tk' => 'TK (Tokelau)',
+'tl' => 'TL (East Timor)',
+'tm' => 'TM (Turkmenistan)',
+'tn' => 'TN (Tunisia)',
+'to' => 'TO* (Tonga)',
+'tr' => 'TR (Turkey)',
+'tt' => 'TT (Trinidad and Tobago)',
+'tv' => 'TV (Tuvalu)',
+'tw' => 'TW (Taiwan)',
+'tz' => 'TZ (Tanzania)',
+'ua' => 'UA (Ukraine)',
+'ug' => 'UG (Uganda)',
+'uk' => 'UK* (United Kingdom)',
+'us' => 'US (United States)',
+'uy' => 'UY (Uruguay)',
+'uz' => 'UZ (Uzbekistan)',
+'va' => 'VA (Vatican)',
+'vc' => 'VC (Saint Vincent and the Grenadines)',
+'ve' => 'VE (Venezuela)',
+'vg' => 'VG (British Virgin Islands)',
+'vi' => 'VI (U.S. Virgin Islands)',
+'vn' => 'VN (Vietnam)',
+'vu' => 'VU (Vanuatu)',
+'wf' => 'WF (Wallis and Futuna)',
+'ws' => 'WS (Samoa)',
+'ye' => 'YE (Yemen)',
+'yt' => 'YT (Mayotte)',
+'za' => 'ZA (South Africa)',
+'zm' => 'ZM (Zambia)',
+'zw' => 'ZW (Zimbabwe)'
 );
 
 $tld_list['iTLD'] = array(
-'xn--p1ai' => '(cc) XN--P1AI - рф [820,042]',
-'xn--ses554g' => '(cn) XN--SES554G - 网址 [217,564]',
-'xn--fiqs8s' => '(cc) XN--FIQS8S - 中国 [213,153]',
-'xn--fiqz9s' => '(cc) XN--FIQZ9S - 中國 [211,520]',
-'xn--55qx5d' => '(cn) XN--55QX5D - 公司 [50,003]',
-'xn--3ds443g' => '(cn) XN--3DS443G - 在线 [49,765]',
-'xn--p1acf' => '(cc) XN--P1ACF - рус [48,033]',
-'xn--j6w193g' => '(cc) XN--J6W193G - 香港 [42,175]',
-'xn--kput3i' => '(cc) XN--KPUT3I - 手机 [36,262]',
-'xn--6qq986b3xl' => '(cn) XN--6QQ986B3XL - 我爱你 [34,592]',
-'xn--io0a7i' => '(cn) XN--IO0A7I - 网络 [32,673]',
-'xn--czr694b' => '(cn) XN--CZR694B - 商标 [25,144]',
-'xn--3e0b707e' => '(cc) XN--3E0B707E - 한국 [19,233]',
-'xn--80adxhks' => '(cc) XN--80ADXHKS - москва [17,346]',
-'xn--czru2d' => '(cn) XN--CZRU2D - 商城 [16,581]',
-'xn--fiq228c5hs' => '(cn) XN--FIQ228C5HS - 中文网 [13,065]',
-'xn--90ais' => '(cc) XN--90AIS - бел [10,706]',
-'xn--j1amh' => '(cc) XN--J1AMH - укр [8,305]',
-'xn--mk1bu44c' => 'XN--MK1BU44C - 닷컴 [6,580]',
-'xn--kpry57d' => '(cc) XN--KPRY57D - 台灣 [6,170]',
-'xn--tckwe' => 'XN--TCKWE - コム [5,995]',
-'xn--hxt814e' => '(cc) XN--HXT814E - 网店 [4,877]',
-'desi' => '(hin) DESI [4,484]',
-'xn--3bst00m' => '(cn) XN--3BST00M - 集团 [4,369]',
-'xn--9dbq2a' => 'XN--9DBQ2A - קום [3,597]',
-'xn--80asehdb' => '(cr) XN--80ASEHDB - онлайн [3,576]',
-'xn--6frz82g' => '(Brand) XN--6FRZ82G - 移动 [3,088]',
-'xn--vuq861b' => '(cc) XN--VUQ861B - 信息 [2,671]',
-'xn--mgbaam7a8h' => '(cc) XN--MGBAAM7A8H - امارات [1,701]',
-'xn--t60b56a' => 'XN--T60B56A - 닷넷 [1,605]',
-'xn--rhqv96g' => '(cn) XN--RHQV96G - 世界 [1,554]',
-'xn--vhquv' => '(cc) XN--VHQUV - 企业 [1,541]',
-'xn--g2xx48c' => '(cc) XN--G2XX48C - 购物 [1,471]',
-'xn--80aswg' => '(cr) XN--80ASWG - сайт [1,287]',
-'xn--c1avg' => '(cr) XN--C1AVG - орг [1,285]',
-'xn--d1acj3b' => '(cr) XN--D1ACJ3B - дети [1,219]',
-'xn--q9jyb4c' => 'XN--Q9JYB4C - みんな [1,192]',
-'xn--90ae' => '(cc) XN--90AE - бг [1,097]',
-'shiksha' => '(hin) SHIKSHA [1,097]',
-'xn--ygbi2ammx' => '(cc) XN--YGBI2AMMX - فلسطين [1,084]',
-'xn--ngbc5azd' => '(ar) XN--NGBC5AZD - شبكة [817]',
-'xn--80ao21a' => '(cc) XN--80AO21A - қаз [812]',
-'xn--90a3ac' => '(cc) XN--90A3AC - срб [802]',
-'xn--h2brj9c' => '(cc) XN--H2BRJ9C - भारत [759]',
-'xn--czrs0t' => '(cc) XN--CZRS0T - 商店 [643]',
-'xn--pgbs0dh' => '(cc) XN--PGBS0DH - تونس [632]',
-'xn--5tzm5g' => '(cn) XN--5TZM5G - 网站 [522]',
-'xn--o3cw4h' => '(cc) XN--O3CW4H - ไทย [502]',
-'xn--e1a4c' => '(cc) XN--E1A4C - ею [446]',
-'xn--node' => '(cc) XN--NODE - გე [425]',
-'xn--4gbrim' => '(ar) XN--4GBRIM - موقع [397]',
-'xn--wgbh1c' => '(cc) XN--WGBH1C - مصر [316]',
-'xn--nqv7f' => '(cn) XN--NQV7F - 机构 [260]',
-'xn--l1acc' => '(cc) XN--L1ACC - мон [231]',
-'xn--mgbayh7gpa' => '(cc) XN--MGBAYH7GPA - الاردن [230]',
-'xn--fiq64b' => '(Brand) XN--FIQ64B - 中信 [200]',
-'xn--fzc2c9e2c' => '(cc) XN--FZC2C9E2C - ලංකා [191]',
-'xn--yfro4i67o' => '(cc) XN--YFRO4I67O - 新加坡 [184]',
-'xn--unup4y' => '(cc) XN--UNUP4Y - 游戏 [176]',
-'xn--kprw13d' => '(cc) XN--KPRW13D - 台湾 [174]',
-'xn--xhq521b' => '(cc) XN--XHQ521B - 广东 [146]',
-'xn--cck2b3b' => 'XN--CCK2B3B - ストア [143]',
-'xn--fjq720a' => '(cc) XN--FJQ720A - 娱乐 [121]',
-'xn--ogbpf8fl' => '(cc) XN--OGBPF8FL - سورية [120]',
-'xn--wgbl6a' => '(cc) XN--WGBL6A - قطر [110]',
-'xn--y9a3aq' => '(cc) XN--Y9A3AQ - հայ [109]',
-'xn--i1b6b1a6a2e' => 'XN--I1B6B1A6A2E - संगठन [105]',
-'xn--1ck2e1b' => 'XN--1CK2E1B - セール [105]',
-'xn--1qqw23a' => '(cc) XN--1QQW23A - 佛山 [98]',
-'xn--xkc2al3hye2a' => '(cc) XN--XKC2AL3HYE2A - இலங்கை [93]',
-'xn--d1alf' => '(cc) XN--D1ALF - мкд [92]',
-'xn--zfr164b' => '(cc) XN--ZFR164B - 政务 [91]',
-'xn--fct429k' => '(cc) XN--FCT429K - 家電 [68]',
-'xn--gckr3f0f' => 'XN--GCKR3F0F - クラウド [67]',
-'xn--jvr189m' => '(cc) XN--JVR189M - 食品 [52]',
-'xn--45q11c' => '(cn) XN--45Q11C - 八卦 [46]',
-'xn--otu796d' => '(cc) XN--OTU796D - 招聘 [39]',
-'xn--bck1b9a5dre4c' => 'XN--BCK1B9A5DRE4C - ファッション [38]',
-'xn--imr513n' => '(cc) XN--IMR513N - 餐厅 [36]',
-'xn--mgbca7dzdo' => '(cc) XN--MGBCA7DZDO - ابوظبي [34]',
-'xn--rovu88b' => '(cc) XN--ROVU88B - 書籍 [34]',
-'xn--nyqy26a' => '(cc) XN--NYQY26A - 健康 [24]',
-'xn--xkc2dl3a5ee0h' => '(cc) XN--XKC2DL3A5EE0H - இந்தியா [24]',
-'xn--55qw42g' => '(cn) XN--55QW42G - 公益 [23]',
-'xn--lgbbat1ad8j' => '(cc) XN--LGBBAT1AD8J - الجزائر [13]',
-'xn--mgb9awbf' => '(cc) XN--MGB9AWBF - عمان [13]',
-'xn--kcrx77d1x4a' => '(Brand) XN--KCRX77D1X4A - 飞利浦 [9]',
-'xn--clchc0ea0b2g2a9gcd' => '(cc) XN--CLCHC0EA0B2G2A9GCD - சிங்கப்பூர் [9]',
-'xn--mgbpl2fh' => '(cc) XN--MGBPL2FH - سودان [4]',
-'xn--fpcrj9c3d' => '(cc) XN--FPCRJ9C3D - భారత్ [3]',
-'xn--mgberp4a5d4ar' => '(cc) XN--MGBERP4A5D4AR - السعودية [2]',
-'xn--mgbc0a9azcg' => '(cc) XN--MGBC0A9AZCG - المغرب [2]',
-'xn--5su34j936bgsg' => '(Brand) XN--5SU34J936BGSG - 香格里拉 [2]',
-'xn--s9brj9c' => '(cc) XN--S9BRJ9C - ਭਾਰਤ [2]',
-'xn--8y0a063a' => '(Brand) XN--8Y0A063A - 联通 [2]',
-'xn--mgba7c0bbn0a' => '(cc) XN--MGBA7C0BBN0A - العليان [2]',
-'xn--mgba3a4f16a' => '(cc) XN--MGBA3A4F16A - ایران [2]',
-'xn--mgba3a3ejt' => '(Brand) XN--MGBA3A3EJT - ارامكو [2]',
-'xn--80aqecdr1a' => '(cr) XN--80AQECDR1A - католик [1]',
-'xn--nqv7fs00ema' => '(cc) XN--NQV7FS00EMA - 组织机构 [1]',
-'xn--11b4c3d' => 'XN--11B4C3D - कॉम [1]',
-'xn--ngbrx' => '(cc) XN--NGBRX - عرب [1]',
-'xn--ngbe9e0a' => '(ar) XN--NGBE9E0A - بيتك [1]',
-'xn--w4rs40l' => '(Brand) XN--W4RS40L - 嘉里 [1]',
-'xn--tiq49xqyj' => '(cc) XN--TIQ49XQYJ - 天主教 [1]',
-'xn--w4r85el8fhu5dnra' => '(Brand) XN--W4R85EL8FHU5DNRA - 嘉里大酒店 [1]',
-'xn--30rr7y' => '(cn) XN--30RR7Y - 慈善 [1]',
-'xn--3oq18vl8pn36a' => '(Brand) XN--3OQ18VL8PN36A - 大众汽车 [1]',
-'xn--pbt977c' => '(cc) XN--PBT977C - 珠宝 [1]',
-'xn--pssy2u' => '(cc) XN--PSSY2U - 大拿 [1]',
-'xn--qcka1pmc' => '(Brand) XN--QCKA1PMC - グーグル [1]',
-'xn--vermgensberatung-pwb' => '(Brand) XN--VERMGENSBERATUNGPWB - vermögensberatung [1]',
-'xn--vermgensberater-ctb' => '(Brand) XN--VERMGENSBERATUNGCTB - vermögensberater [1]',
-'xn--42c2d9a' => 'XN--42C2D9A - คอม [1]',
-'xn--3pxu8k' => '(cc) XN--3PXU8K - 点看 [1]',
-'xn--mxtq1m' => '(cc) XN--MXTQ1M - 政府 [1]',
-'xn--9et52u' => '(cc) XN--9ET52U - 时尚 [1]',
-'xn--flw351e' => '(Brand) XN--FLW351E - 谷歌 [1]',
-'xn--9krt00a' => '(cn) XN--9KRT00A - 微博 [1]',
-'xn--b4w605ferd' => '(Brand) XN--B4W605FERD - 淡马锡 [1]',
-'xn--fzys8d69uvgm' => '(Brand) XN--FZYS8D69UVGM - 電訊盈科 [1]',
-'xn--fhbei' => '(ar) XN--FHBEI - كوم [1]',
-'xn--gk3at1e' => '(cc) XN--GK3AT1E - 通販 [1]',
-'xn--estv75g' => '(Brand) XN--ESTV75G - 工行 [1]',
-'xn--efvy88h' => '(cc) XN--EFVY88H - 新闻 [1]',
-'xn--j1aef' => '(cr) XN--J1AEF - ком [1]',
-'xn--eckvdtc9d' => 'XN--ECKVDTC9D - ポイント [1]',
-'xn--jlq61u9w7b' => '(Brand) XN--JLQ61U9W7B - 诺基亚 [1]',
-'xn--cg4bki' => '(Brand) XN--CG4BKI - 삼성 [1]',
-'xn--kpu716f' => '(cc) XN--KPU716F - 手表 [1]',
-'xn--c2br7g' => 'XN--C2BR7G - नेट [1]',
-'xn--mgbaakc7dvf' => '(Brand) XN--MGBAAKC7DVF - اتصالات [1]',
-'xn--mgbt3dhd' => '(cc) XN--MGBT3DHD - همراه [1]',
-'xn--mgbb9fbpob' => '(ar) XN--MGBB9FBPOB - موبايلي [1]',
-'xn--mgbi4ecexp' => '(ar) XN--MGBI4ECEXP - كاثوليك [1]',
-'xn--mgbbh1a71e' => '(cc) XN--MGBBH1A71E - بھارت [1]',
-'xn--mix082f' => '(cc) XN--MIX082F - 澳门 [Unknown]',
-'xn--mgbx4cd0ab' => '(cc) XN--MGBX4CD0AB - مليسيا [Unknown]',
-'xn--gecrj9c' => '(cc) XN--GECRJ9C - ભારત [Unknown]',
-'xn--nnx388a' => '(cc) XN--NNX388A - 臺灣 [Unknown]',
-'xn--h2breg3eve' => '(cc) XN--H2BREG3EVE - भारतम् [Unknown]',
-'xn--h2brj9c8c' => '(cc) XN--H2BRJ9C8C - भारोत [Unknown]',
-'xn--mgbtx2b' => '(cc) XN--MGBTX2B - عراق [Unknown]',
-'xn--mgbtf8fl' => '(cc) XN--MGBTF8FL - سوريا [Unknown]',
-'xn--mgbqly7cvafr' => '(cc) XN--MGBQLY7CVAFR - السعوديه [Unknown]',
-'xn--mgbqly7c0a67fbc' => '(cc) XN--MGBQLY7C0A67FBC - السعودیۃ [Unknown]',
-'xn--2scrj9c' => '(cc) XN--2SCRJ9C - ಭಾರತ [Unknown]',
-'xn--mgberp4a5d4a87g' => '(cc) XN--MGBERP4A5D4A87G - السعودیة [Unknown]',
-'xn--mgbgu82a' => '(cc) XN--MGBGU82A - ڀارت [Unknown]',
-'xn--mgbbh1a' => '(cc) XN--MGBBH1A - بارت [Unknown]',
-'xn--3hcrj9c' => '(cc) XN--3HCRJ9C - ଭାରତ [Unknown]',
-'xn--mgb2ddes' => '(cc) XN--MGB2DDES - اليمن [Unknown]',
-'xn--mgba3a4fra' => '(cc) XN--MGBA3A4FRA - ايران [Unknown]',
-'xn--54b7fta0cc' => '(cc) XN--54B7FTA0CC - বাংলা [Unknown]',
-'xn--mgbab2bd' => '(ar) XN--MGBAB2BD - بازار [Unknown]',
-'xn--mix891f' => '(cc) XN--MIX891F - 澳門 [Unknown]',
-'xn--mgbai9a5eva00b' => '(cc) XN--MGBAI9A5EVA00B - پاكستان [Unknown]',
-'xn--45br5cyl' => '(cc) XN--45BR5CYL - ভাৰত [Unknown]',
-'xn--qxam' => '(cc) XN--QXAM - ελ [Unknown]',
-'xn--mgbai9azgqp6j' => '(cc) XN--MGBAI9AZGQP6J - پاکستان [Unknown]',
-'xn--45brj9c' => '(cc) XN--45BRJ9C - ভারত [Unknown]',
-'xn--rvc1e0am3e' => '(cc) XN--RVC1E0AM3E - ഭാരതം [Unknown]'
+'xn--11b4c3d' => 'XN--11B4C3D - कॉम',
+'xn--1ck2e1b' => 'XN--1CK2E1B - セール',
+'xn--1qqw23a' => '(cc) XN--1QQW23A - 佛山',
+'xn--2scrj9c' => '(cc) XN--2SCRJ9C - ಭಾರತ',
+'xn--30rr7y' => '(cn) XN--30RR7Y - 慈善',
+'xn--3bst00m' => '(cn) XN--3BST00M - 集团',
+'xn--3ds443g' => '(cn) XN--3DS443G - 在线',
+'xn--3e0b707e' => '(cc) XN--3E0B707E - 한국',
+'xn--3hcrj9c' => '(cc) XN--3HCRJ9C - ଭାରତ',
+'xn--3pxu8k' => '(cc) XN--3PXU8K - 点看',
+'xn--42c2d9a' => 'XN--42C2D9A - คอม',
+'xn--45br5cyl' => '(cc) XN--45BR5CYL - ভাৰত',
+'xn--45brj9c' => '(cc) XN--45BRJ9C - ভারত',
+'xn--45q11c' => '(cn) XN--45Q11C - 八卦',
+'xn--4dbrk0ce' => 'XN--4DBRK0CE',
+'xn--4gbrim' => '(ar) XN--4GBRIM - موقع',
+'xn--54b7fta0cc' => '(cc) XN--54B7FTA0CC - বাংলা',
+'xn--55qw42g' => '(cn) XN--55QW42G - 公益',
+'xn--55qx5d' => '(cn) XN--55QX5D - 公司',
+'xn--5su34j936bgsg' => '(Brand) XN--5SU34J936BGSG - 香格里拉',
+'xn--5tzm5g' => '(cn) XN--5TZM5G - 网站',
+'xn--6frz82g' => '(Brand) XN--6FRZ82G - 移动',
+'xn--6qq986b3xl' => '(cn) XN--6QQ986B3XL - 我爱你',
+'xn--80adxhks' => '(cc) XN--80ADXHKS - москва',
+'xn--80ao21a' => '(cc) XN--80AO21A - қаз',
+'xn--80aqecdr1a' => '(cr) XN--80AQECDR1A - католик',
+'xn--80asehdb' => '(cr) XN--80ASEHDB - онлайн',
+'xn--80aswg' => '(cr) XN--80ASWG - сайт',
+'xn--8y0a063a' => '(Brand) XN--8Y0A063A - 联通',
+'xn--90a3ac' => '(cc) XN--90A3AC - срб',
+'xn--90ae' => '(cc) XN--90AE - бг',
+'xn--90ais' => '(cc) XN--90AIS - бел',
+'xn--9dbq2a' => 'XN--9DBQ2A - קום',
+'xn--9et52u' => '(cc) XN--9ET52U - 时尚',
+'xn--9krt00a' => '(cn) XN--9KRT00A - 微博',
+'xn--b4w605ferd' => '(Brand) XN--B4W605FERD - 淡马锡',
+'xn--bck1b9a5dre4c' => 'XN--BCK1B9A5DRE4C - ファッション',
+'xn--c1avg' => '(cr) XN--C1AVG - орг',
+'xn--c2br7g' => 'XN--C2BR7G - नेट',
+'xn--cck2b3b' => 'XN--CCK2B3B - ストア',
+'xn--cckwcxetd' => 'XN--CCKWCXETD',
+'xn--cg4bki' => '(Brand) XN--CG4BKI - 삼성',
+'xn--clchc0ea0b2g2a9gcd' => '(cc) XN--CLCHC0EA0B2G2A9GCD - சிங்கப்பூர்',
+'xn--czr694b' => '(cn) XN--CZR694B - 商标',
+'xn--czrs0t' => '(cc) XN--CZRS0T - 商店',
+'xn--czru2d' => '(cn) XN--CZRU2D - 商城',
+'xn--d1acj3b' => '(cr) XN--D1ACJ3B - дети',
+'xn--d1alf' => '(cc) XN--D1ALF - мкд',
+'xn--e1a4c' => '(cc) XN--E1A4C - ею',
+'xn--eckvdtc9d' => 'XN--ECKVDTC9D - ポイント',
+'xn--efvy88h' => '(cc) XN--EFVY88H - 新闻',
+'xn--fct429k' => '(cc) XN--FCT429K - 家電',
+'xn--fhbei' => '(ar) XN--FHBEI - كوم',
+'xn--fiq228c5hs' => '(cn) XN--FIQ228C5HS - 中文网',
+'xn--fiq64b' => '(Brand) XN--FIQ64B - 中信',
+'xn--fiqs8s' => '(cc) XN--FIQS8S - 中国',
+'xn--fiqz9s' => '(cc) XN--FIQZ9S - 中國',
+'xn--fjq720a' => '(cc) XN--FJQ720A - 娱乐',
+'xn--flw351e' => '(Brand) XN--FLW351E - 谷歌',
+'xn--fpcrj9c3d' => '(cc) XN--FPCRJ9C3D - భారత్',
+'xn--fzc2c9e2c' => '(cc) XN--FZC2C9E2C - ලංකා',
+'xn--fzys8d69uvgm' => '(Brand) XN--FZYS8D69UVGM - 電訊盈科',
+'xn--g2xx48c' => '(cc) XN--G2XX48C - 购物',
+'xn--gckr3f0f' => 'XN--GCKR3F0F - クラウド',
+'xn--gecrj9c' => '(cc) XN--GECRJ9C - ભારત',
+'xn--gk3at1e' => '(cc) XN--GK3AT1E - 通販',
+'xn--h2breg3eve' => '(cc) XN--H2BREG3EVE - भारतम्',
+'xn--h2brj9c' => '(cc) XN--H2BRJ9C - भारत',
+'xn--h2brj9c8c' => '(cc) XN--H2BRJ9C8C - भारोत',
+'xn--hxt814e' => '(cc) XN--HXT814E - 网店',
+'xn--i1b6b1a6a2e' => 'XN--I1B6B1A6A2E - संगठन',
+'xn--imr513n' => '(cc) XN--IMR513N - 餐厅',
+'xn--io0a7i' => '(cn) XN--IO0A7I - 网络',
+'xn--j1aef' => '(cr) XN--J1AEF - ком',
+'xn--j1amh' => '(cc) XN--J1AMH - укр',
+'xn--j6w193g' => '(cc) XN--J6W193G - 香港',
+'xn--jlq480n2rg' => 'XN--JLQ480N2RG',
+'xn--jvr189m' => '(cc) XN--JVR189M - 食品',
+'xn--kcrx77d1x4a' => '(Brand) XN--KCRX77D1X4A - 飞利浦',
+'xn--kprw13d' => '(cc) XN--KPRW13D - 台湾',
+'xn--kpry57d' => '(cc) XN--KPRY57D - 台灣',
+'xn--kput3i' => '(cc) XN--KPUT3I - 手机',
+'xn--l1acc' => '(cc) XN--L1ACC - мон',
+'xn--lgbbat1ad8j' => '(cc) XN--LGBBAT1AD8J - الجزائر',
+'xn--mgb9awbf' => '(cc) XN--MGB9AWBF - عمان',
+'xn--mgba3a3ejt' => '(Brand) XN--MGBA3A3EJT - ارامكو',
+'xn--mgba3a4f16a' => '(cc) XN--MGBA3A4F16A - ایران',
+'xn--mgba7c0bbn0a' => '(cc) XN--MGBA7C0BBN0A - العليان',
+'xn--mgbaam7a8h' => '(cc) XN--MGBAAM7A8H - امارات',
+'xn--mgbab2bd' => '(ar) XN--MGBAB2BD - بازار',
+'xn--mgbah1a3hjkrd' => 'XN--MGBAH1A3HJKRD',
+'xn--mgbai9azgqp6j' => '(cc) XN--MGBAI9AZGQP6J - پاکستان',
+'xn--mgbayh7gpa' => '(cc) XN--MGBAYH7GPA - الاردن',
+'xn--mgbbh1a' => '(cc) XN--MGBBH1A - بارت',
+'xn--mgbbh1a71e' => '(cc) XN--MGBBH1A71E - بھارت',
+'xn--mgbc0a9azcg' => '(cc) XN--MGBC0A9AZCG - المغرب',
+'xn--mgbca7dzdo' => '(cc) XN--MGBCA7DZDO - ابوظبي',
+'xn--mgbcpq6gpa1a' => 'XN--MGBCPQ6GPA1A',
+'xn--mgberp4a5d4ar' => '(cc) XN--MGBERP4A5D4AR - السعودية',
+'xn--mgbgu82a' => '(cc) XN--MGBGU82A - ڀارت',
+'xn--mgbi4ecexp' => '(ar) XN--MGBI4ECEXP - كاثوليك',
+'xn--mgbpl2fh' => '(cc) XN--MGBPL2FH - سودان',
+'xn--mgbt3dhd' => '(cc) XN--MGBT3DHD - همراه',
+'xn--mgbtx2b' => '(cc) XN--MGBTX2B - عراق',
+'xn--mgbx4cd0ab' => '(cc) XN--MGBX4CD0AB - مليسيا',
+'xn--mix891f' => '(cc) XN--MIX891F - 澳門',
+'xn--mk1bu44c' => 'XN--MK1BU44C - 닷컴',
+'xn--mxtq1m' => '(cc) XN--MXTQ1M - 政府',
+'xn--ngbc5azd' => '(ar) XN--NGBC5AZD - شبكة',
+'xn--ngbe9e0a' => '(ar) XN--NGBE9E0A - بيتك',
+'xn--ngbrx' => '(cc) XN--NGBRX - عرب',
+'xn--node' => '(cc) XN--NODE - გე',
+'xn--nqv7f' => '(cn) XN--NQV7F - 机构',
+'xn--nqv7fs00ema' => '(cc) XN--NQV7FS00EMA - 组织机构',
+'xn--nyqy26a' => '(cc) XN--NYQY26A - 健康',
+'xn--o3cw4h' => '(cc) XN--O3CW4H - ไทย',
+'xn--ogbpf8fl' => '(cc) XN--OGBPF8FL - سورية',
+'xn--otu796d' => '(cc) XN--OTU796D - 招聘',
+'xn--p1acf' => '(cc) XN--P1ACF - рус',
+'xn--p1ai' => '(cc) XN--P1AI - рф',
+'xn--pgbs0dh' => '(cc) XN--PGBS0DH - تونس',
+'xn--pssy2u' => '(cc) XN--PSSY2U - 大拿',
+'xn--q7ce6a' => 'XN--Q7CE6A',
+'xn--q9jyb4c' => 'XN--Q9JYB4C - みんな',
+'xn--qcka1pmc' => '(Brand) XN--QCKA1PMC - グーグル',
+'xn--qxa6a' => 'XN--QXA6A',
+'xn--qxam' => '(cc) XN--QXAM - ελ',
+'xn--rhqv96g' => '(cn) XN--RHQV96G - 世界',
+'xn--rovu88b' => '(cc) XN--ROVU88B - 書籍',
+'xn--rvc1e0am3e' => '(cc) XN--RVC1E0AM3E - ഭാരതം',
+'xn--s9brj9c' => '(cc) XN--S9BRJ9C - ਭਾਰਤ',
+'xn--ses554g' => '(cn) XN--SES554G - 网址',
+'xn--t60b56a' => 'XN--T60B56A - 닷넷',
+'xn--tckwe' => 'XN--TCKWE - コム',
+'xn--tiq49xqyj' => '(cc) XN--TIQ49XQYJ - 天主教',
+'xn--unup4y' => '(cc) XN--UNUP4Y - 游戏',
+'xn--vermgensberater-ctb' => '(Brand) XN--VERMGENSBERATUNGCTB - vermögensberater',
+'xn--vermgensberatung-pwb' => '(Brand) XN--VERMGENSBERATUNGPWB - vermögensberatung',
+'xn--vhquv' => '(cc) XN--VHQUV - 企业',
+'xn--vuq861b' => '(cc) XN--VUQ861B - 信息',
+'xn--w4r85el8fhu5dnra' => '(Brand) XN--W4R85EL8FHU5DNRA - 嘉里大酒店',
+'xn--w4rs40l' => '(Brand) XN--W4RS40L - 嘉里',
+'xn--wgbh1c' => '(cc) XN--WGBH1C - مصر',
+'xn--wgbl6a' => '(cc) XN--WGBL6A - قطر',
+'xn--xhq521b' => '(cc) XN--XHQ521B - 广东',
+'xn--xkc2al3hye2a' => '(cc) XN--XKC2AL3HYE2A - இலங்கை',
+'xn--xkc2dl3a5ee0h' => '(cc) XN--XKC2DL3A5EE0H - இந்தியா',
+'xn--y9a3aq' => '(cc) XN--Y9A3AQ - հայ',
+'xn--yfro4i67o' => '(cc) XN--YFRO4I67O - 新加坡',
+'xn--ygbi2ammx' => '(cc) XN--YGBI2AMMX - فلسطين',
+'xn--zfr164b' => '(cc) XN--ZFR164B - 政务'
 );
 
 $tld_list['bgTLD'] = array(
@@ -2444,256 +2587,257 @@ $tld_info = array();
 $tld_info['gTLD']	= 'List of Generic Top-Level-Domains (gTLD)';
 $tld_info['ccTLD']	= 'List of Country code Top-Level-Domains (ccTLD)';
 $tld_info['iTLD']	= 'List of Internationalized (IDN) Top-Level-Domains (iTLD)';
-$tld_info['bgTLD']	= 'List of Branded Generic Top-Level-Domains (bgTLD)'; 
+$tld_info['bgTLD']	= 'List of Branded Generic Top-Level-Domains (bgTLD)';
 
-$section->addInput(new Form_Checkbox(
-	'pfb_pytld',
-	gettext('TLD Allow') . '(py)',
-	'Enable',
-	$pconfig['pfb_pytld'] === 'on' ? true:false,
-	'on'
-))->setHelp('Enable the Python TLD Allow feature (1,546 TLDs available). This will block all TLDs that are not specifically selected.'
-		. '<div id="dnsbl_python_tld_allow_text">'
-		. '<strong>By default</strong> \'ARPA\' and the pfSense TLD \'' . strtoupper($local_tld) . '\' are allowed.<br />'
-		. 'If no TLDs are selected, the following are added by default [ COM, NET, ORG, EDU, CA, CO, IO ]<br /><br />'
-		. 'Detailed TLD listings : <a target=_blank href="http://www.iana.org/domains/root/db">Root Zone Top-Level Domains.</a><br />'
-		. 'Changes to this option will require a Force Update to take effect.<br /><br />'
-		. '<strong>Legend</strong>:<br />'
-		. '(*) TLD is used by atleast one DNSBL Feed in the Feeds Tab. Confirm the TLDs used by the selected Feeds.<br />'
-		. '(!) TLD is listed by <a target=_blank href="https://www.spamhaus.org/statistics/tlds/">Spamhaus (Most Abused TLDs)</a><br /></div>'
-		);
+$tld_total = array_sum(array_map('count', $tld_list));
 
-$section->addInput(new Form_Checkbox(
-	'pfb_pytld_sort',
-	'',
-	'Enable',
-	$pconfig['pfb_pytld_sort'] === 'on' ? true:false,
-	'on'
-))->setHelp('Enable to sort TLDs alphabetically');
+$pgtitle = array(gettext('Firewall'), gettext('pfBlockerNG'), gettext('DNS'), gettext('DNSBL'));
+$pglinks = array('', '/pfblockerng/pfblockerng_general.php', '/pfblockerng/pfblockerng_dns_general.php', '@self');
+$shortcut_section = 'pfblockerng';
+include_once('head.inc');
 
-$group = new Form_Group('TLD Group 1 (py)');
-foreach (array('gTLD', 'ccTLD', 'iTLD', 'bgTLD') as $key => $tld_type) {
-	if ($key == 2) {
-		$group = new Form_Group('TLD Group 2 (py)');
-	}
-	$count = count($tld_list[$tld_type]);
-
-	if ($pconfig['pfb_pytld_sort'] == 'on') {
-		ksort($tld_list[$tld_type]);
-	}
-
-	$group->add(new Form_Select(
-		'pfb_pytlds_' . strtolower($tld_type),
-		'',
-		$pconfig['pfb_pytlds_' . strtolower($tld_type)],
-		$tld_list[$tld_type],
-		TRUE
-	))->setHelp("{$tld_info[$tld_type]}<br />Total TLD Count: [{$count}]")
-	  ->setAttribute('size', '20')
-	  ->addClass('pfb_python')
-	  ->setWidth(4);
-
-	if ($key == 1 || $key == 3) { 
-		$section->add($group);
-	}
+if ($input_errors) {
+	print_input_errors($input_errors);
 }
 
+// Define default Alerts Tab href link (Top row)
+$get_req = pfb_alerts_default_page();
+
+$tab_array	= array();
+$tab_array[]	= array(gettext('General'),	FALSE,	'/pfblockerng/pfblockerng_general.php');
+$tab_array[]	= array(gettext('IP'),		FALSE,	'/pfblockerng/pfblockerng_ip.php');
+$tab_array[]	= array(gettext('DNS'),	TRUE,	'/pfblockerng/pfblockerng_dns_general.php');
+$tab_array[]	= array(gettext('Update'),	FALSE,	'/pfblockerng/pfblockerng_update.php');
+$tab_array[]	= array(gettext('Reports'),	FALSE,	"/pfblockerng/pfblockerng_alerts.php{$get_req}");
+$tab_array[]	= array(gettext('Feeds'),	FALSE,	'/pfblockerng/pfblockerng_feeds.php');
+$tab_array[]	= array(gettext('Logs'),	FALSE,	'/pfblockerng/pfblockerng_log.php');
+$tab_array[]	= array(gettext('Sync'),	FALSE,	'/pfblockerng/pfblockerng_sync.php');
+pfb_software_add_tab($tab_array);
+display_top_tabs($tab_array, TRUE);
+
+$tab_array	= array();
+$tab_array[]	= array(gettext('General'),	FALSE,	'/pfblockerng/pfblockerng_dns_general.php');
+$tab_array[]	= array(gettext('pfB-DNS'),	FALSE,		'/pfblockerng/pfblockerng_dns.php');
+$tab_array[]	= array(gettext('DNSBL'),	TRUE,		'/pfblockerng/pfblockerng_dnsbl.php');
+$tab_array[]	= array(gettext('DNSBL Groups'),	FALSE,		'/pfblockerng/pfblockerng_category.php?type=dnsbl');
+$tab_array[]	= array(gettext('DNSBL Category'),	FALSE,		'/pfblockerng/pfblockerng_blacklist.php');
+$tab_array[]	= array(gettext('DNSBL SafeSearch'),	FALSE,		'/pfblockerng/pfblockerng_safesearch.php');
+display_top_tabs($tab_array, TRUE);
+pfb_print_pending_changes_box();
+
+if (isset($_REQUEST['savemsg'])) {
+	$savemsg = htmlspecialchars($_REQUEST['savemsg']);
+	print_info_box($savemsg);
+}
+
+$pfb_stale_vip_warning = pfb_dnsbl_stale_vip_warning(PfbConfig::read('dnsbl/pfb_dnsvip_auto'), PfbConfig::read('dnsbl/pfb_dnsvip4'), PfbConfig::read('dnsbl/pfb_dnsvip6'), !empty($pfb['dnsbl_vip_demand']));
+if ($pfb_stale_vip_warning !== '') {
+	print_info_box($pfb_stale_vip_warning, 'warning');
+}
+
+$form = new Form('Save DNSBL settings');
+
+$section = new Form_Section('DNSBL');
+$section->addInput(new Form_StaticText(
+	'Links',
+	'<small>'
+	. '<a href="/firewall_aliases.php" target="_blank" rel="noopener noreferrer">Firewall Aliases</a>&emsp;'
+	. '<a href="/firewall_rules.php" target="_blank" rel="noopener noreferrer">Firewall Rules</a>&emsp;'
+	. '<a href="/status_logs_filter.php" target="_blank" rel="noopener noreferrer">Firewall Logs</a></small>'
+));
+
+$dnsbl_text = '<div class="infoblock">'
+		. '<div id="dnsbl_eval_order">'
+		. '<strong>DNSBL checks, in order:</strong>'
+		. '<ol>'
+		. '<li><strong>Feed lists, exact name</strong> — a listed domain is blocked (logged as DNSBL).</li>'
+		. '<li><strong>Feed lists, wildcard/zone</strong> — Wildcard Blocking classifies registrable domains (logged as TLD).</li>'
+		. '<li><strong>TLD Allow</strong> — when enabled, a name whose suffix is not selected is blocked here (logged as TLD_Allow).</li>'
+		. '<li><strong>IDN Blocking</strong> — Off / Confusable / Always. Confusable can raise a non-blocking alert instead of a block.</li>'
+		. '<li><strong>Regex Blocking</strong> — user regex and ABP feed block-regex.</li>'
+		. '</ol>'
+		. 'Feed exact and wildcard matching (1–2) run only while DNSBL blocking is enabled; TLD Allow, IDN, and Regex (3–5) still run.<br /><br />'
+		. 'If a block is found, a whitelist entry, an ABP allow rule (<code>@@</code>) or an allow-regex can override it. If several rules match, the one with the highest priority decides; <code>$important</code> rules and Custom List entries outrank ordinary feed rules.<br /><br />'
+		. 'If the name is still blocked, the reply is shaped last: HSTS may use null-blocking to avoid browser certificate errors; NXDOMAIN and NODATA replies (logged or silent) replace a VIP or null answer; a hit via a CNAME chain is tagged <code>_CNAME</code>. Null-blocking is not a property of which stage matched.<br /><br />'
+		. '<strong>CNAME Validation</strong> and <strong>no-AAAA</strong> are separate features, not steps in this order. Feed-at-suffix (PSL) policies, the regex cap, and <strong>Download Schemes</strong> shape what is loaded, not the per-query order.'
+		. '</div><br /><br />'
+		. '<strong>Note:</strong> '
+		. 'DNSBL requires the DNS Resolver (Unbound) to be used as the DNS service.<br />'
+		. 'If browsing is slow <strong>in VIP mode</strong>, check for Firewall LAN Rules/Limiters that might be blocking access to the DNSBL VIP.<br /><br />'
+		. '<strong>Note:</strong> '
+		. 'DNSBL will block and <u>partially</u> log Alerts for HTTPS requests. '
+		. 'To debug issues with \'False Positives\', the following tools below can be used:<br />'
+		. '<ol>'
+		. '<li>Browser Developer tools, Console tab, for error messages.</li>'
+		. '<li>Execute the following from the pfSense Shell, substituting your LAN interface for <code>re1</code> and the DNSBL Virtual IP under <strong>DNSBL Webserver Configuration</strong> below (applies only to the VIP response):<br />'
+		. '<code>tcpdump -nnvli re1 port 53 | grep -B1 \'A &lt;VIP&gt;\'</code></li>'
+		. '<li>Packet capture software such as Wireshark.</li>'
+		. '</ol>'
+		. '</div>';
+
 $section->addInput(new Form_Checkbox(
-	'pfb_idn',
-	gettext('IDN Blocking') . '(py)',
-	'Enable',
-	$pconfig['pfb_idn'] === 'on' ? true:false,
+	'pfb_dnsbl',
+	gettext('DNSBL'),
+	'Enable DNSBL',
+	pfb_cfg_toggle_read($pconfig['pfb_dnsbl']) === PfbToggle::On,
 	'on'
-))->setHelp('Enable the Python IDN blocking feature (not Regex based). This will block all IDN\'s and domains that include \'xn--\'.');
+))->setHelp('Block the domains in your DNSBL groups. Needs the DNS Resolver, and pfBlockerNG enabled on the <strong>General</strong> tab.'
+		. "{$dnsbl_text}"
+);
+
+$tld_wildcard_text = 'Block listed domains and their subdomains. '
+		. pfb_list_section_help_note(['TLD Exclusion List', 'TLD Blacklist'], TRUE)
+		. '<div id="dnsbl_tld_info" class="infoblock">
+
+		<strong>Definition: Public suffix</strong> -
+		a domain suffix under which the public may register names, per the
+		<a href="https://publicsuffix.org/" target="_blank" rel="noopener noreferrer">Public Suffix List</a>. IE: <code>com</code>,
+		<code>co.uk</code>, <code>github.io</code><br /><br />
+
+		<strong>Definition: Registrable domain</strong> -
+		a public suffix plus exactly one additional label. IE: <code>example.com</code> (suffix = <code>com</code>), <code>example.co.uk</code> (suffix = <code>co.uk</code>)<br /><br />
+
+		When enabled and after all downloads for DNSBL Feeds have completed; this process will classify the listed Domains.<br />
+		A Domain listed at its <strong>registrable domain</strong> is wildcard blocked (Block all sub-Domains).<br />
+		A Domain that is itself a <strong>public suffix</strong> is <strong>never</strong> wildcard blocked (blocking it would block every registrant under it).<br />
+		A Domain listed <strong>deeper</strong> than its registrable domain stays an exact block (only that specific name).<br />
+		The Public Suffix List authority can be found in <code>/usr/local/pkg/pfblockerng/dnsbl_psl</code><br /><br />
+
+		To exclude a suffix or domain from wildcard expansion, add it to the <strong>TLD Exclusion List</strong>; explicitly listed names stay blocked.<br /><br />
+		<strong>Note:</strong>
+		A specific subdomain added to the <strong>DNSBL Whitelist</strong> is allowed even when its parent is wildcard blocked.<br />
+		To allow a domain and its subdomains, add <code>.example.com</code> to <strong>DNSBL Whitelist</strong>.<br /><br />
+
+		<strong>TLD Blacklist</strong> can be used to block whole TLDs. For example: <code>xyz</code><br />
+
+
+
+	</div>';
+
+$section->addInput(new Form_Checkbox(
+	'tld_wildcard',
+	gettext('Wildcard Blocking'),
+	'Enable',
+	pfb_cfg_toggle_read($pconfig['tld_wildcard']) === PfbToggle::On,
+	'on'
+))->setHelp($tld_wildcard_text);
+
+$section->addInput(new Form_StaticText(
+	gettext('DNS Reply Logging'),
+	'Moved to the <a href="/pfblockerng/pfblockerng_dns_general.php">DNS General</a> tab: one setting for the DNSBL module and for pfB-DNS without DNSBL.'
+));
+
+$section->addInput(new Form_Checkbox(
+	'pfb_hsts',
+	gettext('HSTS mode'),
+	'Enable',
+	pfb_dnsbl_toggle_enabled($pconfig['pfb_hsts'] ?? NULL),
+	'on'
+))->setHelp('Answer HSTS-preload domains with <code>0.0.0.0</code> / <code>::</code> instead of the DNSBL VIP, which may avoid browser certificate errors.'
+	. '<div class="infoblock">'
+	. 'Enable the DNSBL <strong title="Utilizes 0.0.0.0 / :: instead of the DNSBL VIP">Null Blocking mode</strong> for HSTS domains.<br />'
+	. 'Blocked domains that are in the <a target="_blank" rel="noopener noreferrer" href="https://hstspreload.org/">HSTS preload</a> browser'
+	. ' <a target="_blank" rel="noopener noreferrer" href="https://raw.githubusercontent.com/chromium/chromium/master/net/http/transport_security_state_static.json">list</a>'
+	. ' will use the Null Blocking Mode which *may* prevent Browser Certificate Errors.<br />'
+	. '<strong>Note:</strong> This option will not block HSTS domains, unless those Domains are added via the Feeds/Customlists.'
+	. '</div>'
+);
+
+$section->addInput(new Form_Select(
+	'pfb_idn',
+	gettext('IDN Blocking'),
+	$pconfig['pfb_idn'],
+	array(
+		'off'		=> 'Off',
+		'confusable'	=> 'Confusable',
+		'on'		=> 'Always',
+	)
+))->setHelp('How IDN / xn-- names are handled (Off, Confusable, or Always). Not regex-based.'
+		. '<div class="infoblock">'
+		. 'IDN handling (not Regex based).<ul>'
+		. '<li><strong>Off</strong> - no IDN action.</li>'
+		. '<li><strong>Confusable</strong> - block only cross-script homoglyphs (Latin/Cyrillic/Greek mixes, '
+		. 'including Cyrillic+Greek).<br />Does not catch whole-script confusables or pure-ASCII typosquats.</li>'
+		. '<li><strong>Always</strong> - block every IDN/\'xn--\' domain (blunt).</li></ul>'
+		. '</div>');
+
+$section->addInput(new Form_Checkbox(
+	'pfb_idn_block_malicious',
+	gettext('Block clearly-malicious homoglyphs'),
+	'Enable',
+	pfb_dnsbl_toggle_enabled($pconfig['pfb_idn_block_malicious'] ?? NULL),
+	'on'
+))->setHelp('In <strong>Confusable</strong> mode, block names that mix confusable scripts in one label (clearly malicious). Disable to alert only. '
+		. 'Applies in <strong>Confusable</strong> mode.');
+
+$section->addInput(new Form_Checkbox(
+	'pfb_idn_escalate_suspicious',
+	gettext('Block suspicious or malformed IDNs'),
+	'Enable',
+	pfb_dnsbl_toggle_enabled($pconfig['pfb_idn_escalate_suspicious'] ?? NULL),
+	'on'
+))->setHelp('In <strong>Confusable</strong> mode, block suspicious mixed-script names and IDNs that cannot be decoded instead of only raising an alert. By default it only alerts.');
 
 $section->addInput(new Form_Checkbox(
 	'pfb_regex',
-	gettext('Regex Blocking') . '(py)',
+	gettext('Regex Blocking'),
 	'Enable',
-	$pconfig['pfb_regex'] === 'on' ? true:false,
+	pfb_cfg_toggle_read($pconfig['pfb_regex']) === PfbToggle::On,
 	'on'
-))->setHelp('Enable the Python Regex blocking feature. Regex list below: [Python Regex List]');
+))->setHelp('Enable the Regex blocking feature. '
+		. pfb_list_section_help_note(['Regex List'], TRUE));
+
+$section->addInput(new Form_Checkbox(
+	'pfb_regex_cap',
+	gettext('Limit regex length to 200 characters'),
+	'Enable',
+	pfb_cfg_toggle_read($pconfig['pfb_regex_cap']) === PfbToggle::On,
+	'on'
+))->setHelp('<p>Drop regex patterns longer than 200 characters from feeds, and from the <strong>Regex List</strong> when <strong>Regex Blocking</strong> is enabled. Feed regex rules are checked even when <strong>Regex Blocking</strong> is off. Without this setting, the limit is 256. Other checks always apply; see <strong>Regex List</strong>.</p>'
+		. '<div class="infoblock">Regex List patterns are checked before feed regex rules. The resolver log reports a rule whose match runs slow and a whole list scan that runs slow; it never removes a rule.</div>');
 
 $section->addInput(new Form_Checkbox(
 	'pfb_cname',
-	gettext('CNAME Validation') . '(py)',
+	gettext('CNAME Validation'),
 	'Enable',
-	$pconfig['pfb_cname'] === 'on' ? true:false,
+	pfb_cfg_toggle_read($pconfig['pfb_cname']) === PfbToggle::On,
 	'on'
-))->setHelp('Enable the Python CNAME Validation feature. All CNAMES will be evaluated against DNSBL database and blocked.<br />'
-		. 'Events are logged with a "_CNAME" suffix in the DNSBL Log.');
+))->setHelp('Also check CNAME targets against DNSBL.'
+		. '<div class="infoblock">'
+		. 'Check each CNAME target in a reply against DNSBL; the query is blocked if a target is listed and not whitelisted.<br />'
+		. 'Events use a <code>_CNAME</code> suffix in the DNSBL log.'
+		. '</div>');
 
 $section->addInput(new Form_Checkbox(
 	'pfb_noaaaa',
-	gettext('no AAAA') . '(py)',
+	gettext('no-AAAA'),
 	'Enable',
-	$pconfig['pfb_noaaaa'] === 'on' ? true:false,
+	pfb_cfg_toggle_read($pconfig['pfb_noaaaa']) === PfbToggle::On,
 	'on'
-))->setHelp('Enable the Python no-AAAA feature. This will block all (IPv6) AAAA DNS requests for the defined domains. no AAAA List below.');
+))->setHelp('Enable the no-AAAA feature. This will block all (IPv6) AAAA DNS requests for the defined domains. '
+		. pfb_list_section_help_note(['no-AAAA List'], TRUE));
 
 $section->addInput(new Form_Checkbox(
 	'pfb_gp',
-	gettext('Python Group Policy') . '(py)',
+	gettext('DNSBL Group Policy'),
 	'Enable',
-	$pconfig['pfb_gp'] === 'on' ? true:false,
+	pfb_cfg_toggle_read($pconfig['pfb_gp']) === PfbToggle::On,
 	'on'
-))->setHelp('Enable the Python Group Policy functionality to allow certain Local LAN IPs to bypass DNSBL');
+))->setHelp('Enable the Group Policy functionality to allow certain Local LAN IPs to bypass DNSBL. '
+		. pfb_list_section_help_note(['DNSBL Group Policy'], TRUE));
 
-$form->add($section);
-
-$section = new Form_Section('Python Group Policy', 'Python_Group_Policy', COLLAPSIBLE|SEC_CLOSED);
-$section->addInput(new Form_StaticText(
-	NULL,
-	'This is a preliminary DNSBL Group Policy configuration that will bypass DNSBL for the defined LAN IPs. (No Subnets allowed)'));
-
-$section->addInput(new Form_Textarea(
-	'pfb_gp_bypass_list',
-	'Bypass IPs',
-	$pconfig['pfb_gp_bypass_list']
-))->removeClass('form-control')
-  ->addClass('row-fluid col-sm-12')
-  ->setAttribute('columns', '90')
-  ->setAttribute('rows', '15')
-  ->setAttribute('wrap', 'off')
-  ->setAttribute('style', 'background:#fafafa; width: 100%')
-  ->setHelp('Enter the Local LAN IPs (one per line) that will bypass Python DNSBL Blocking.<br />'
-		. 'Changes to this option will require a Force Update to take effect.');
-
-$form->add($section);
-
-$regex_text = 'List of Python Regex\'s to block via DNSBL<br /><br />
-		Enter a single regex per line.<br /><br />
-		You may use "<strong>#</strong>" after each line for a Regex Description. IE:&emsp;regex (Regular Expression) # Regex Description<br /><br />
-		Ensure a space is entered before the # character. Keep the Regex description less than 15 characters as it will be used in<br />
-		the Alerts Tab. If no Description is entered a default Regex line number will be utilized.<br />
-		This List is stored as \'Base64\' format in the config.xml file.<br /><br />
-		Changes to this option will require a Force Update to take effect.';
-
-$section = new Form_Section('Python Regex List', 'Python_regex_list', COLLAPSIBLE|SEC_CLOSED);
-$section->addInput(new Form_Textarea(
-	'pfb_regex_list',
-	'Python Regex List',
-	$pconfig['pfb_regex_list']
-))->removeClass('form-control')
-  ->addClass('row-fluid col-sm-12')
-  ->setAttribute('columns', '90')
-  ->setAttribute('rows', '15')
-  ->setAttribute('wrap', 'off')
-  ->setAttribute('style', 'background:#fafafa; width: 100%')
-  ->setHelp($regex_text);
-
-$form->add($section);
-
-$noaaaa_text = 'List of no AAAA domains to block the (IPv6) AAAA DNS Resolution.<br /><br />
-		Enter a single domain per line.<br />
-		Prefix domain with a "." to apply wildcard no AAAA to all Sub-Domains. &emsp;IE: (.example.com)<br /><br />
-		Any domain added to the no AAAA list, will never be filtered by any DNSBL python blocking.<br /><br />
-		This List is stored as \'Base64\' format in the config.xml file.<br /><br />
-		Changes to this option will require a Force Update to take effect.';
-
-$section = new Form_Section('Python no AAAA  List', 'Python_noaaaa_list', COLLAPSIBLE|SEC_CLOSED);
-$section->addInput(new Form_Textarea(
-	'pfb_noaaaa_list',
-	'Python no AAAA List',
-	$pconfig['pfb_noaaaa_list']
-))->removeClass('form-control')
-  ->addClass('row-fluid col-sm-12')
-  ->setAttribute('columns', '90')
-  ->setAttribute('rows', '15')
-  ->setAttribute('wrap', 'off')
-  ->setAttribute('style', 'background:#fafafa; width: 100%')
-  ->setHelp($noaaaa_text);
-
-$form->add($section);
-
-$section = new Form_Section('DNSBL Webserver Configuration');
-$section->addInput(new Form_Select(
-	'dnsbl_interface',
-	gettext('Web Server Interface'),
-	$pconfig['dnsbl_interface'],
-	$options_dnsbl_interface_all
-))->setHelp('Select the interface which DNSBL Web Server will Listen on.<br />'
-	. 'Default: <strong>Localhost (ports 80/443)</strong> - Selected Interface should be a Local Interface only.');
-
-$group = new Form_Group('DNSBL Virtual IP');
-$vips = pfb_get_vips();
-$group->add(new Form_Select(
-	'pfb_dnsvip4',
-	gettext('IPv4 VIP'),
-	$pconfig['pfb_dnsvip4'],
-	pfb_get_vip_options(AF_INET)
-))->setWidth(4)->setHelp('IPv4 Virtual IP');
-$group->add(new Form_Select(
-	'pfb_dnsvip6',
-	gettext('IPv6 VIP'),
-	(!empty($pconfig['pfb_dnsvip6']) ? $pconfig['pfb_dnsvip6'] : 'none'),
-	pfb_get_vip_options(AF_INET6)
-))->setWidth(4)->setHelp('IPv6 Virtual IP (optional)');;
-$group->setHelp('Select the DNSBL VIP address.%1$s'
-		. 'This address should be in an Isolated Range that is not already used in the Network.%1$s'
-		. 'Rejected DNS requests will be forwarded to this VIP.%1$s'
-		. 'VIPs %2$smust be configured first%3$s at %4$sFirewall > Virtual IPs%5$s.',
-	'<br />', '<strong>', '</strong>', '<a target="_blank" href="/firewall_virtual_ip.php">', '</a>'
-);
-$section->add($group);
-
-$section->addInput(new Form_Input(
-	'pfb_dnsport',
-	gettext('Port'),
-	'number',
-	$pconfig['pfb_dnsport'],
-	[ 'min' => 1, 'max' => 65535, 'placeholder' => 'Enter DNSBL Listening Port' ]
-))->setHelp('Example ( 8081 )<br />Enter a &emsp;<strong>single PORT</strong> &emsp;that is in the range of 1 - 65535<br />'
-		. 'This Port must not be in use by any other process.'
-);
-
-$section->addInput(new Form_Input(
-	'pfb_dnsport_ssl',
-	gettext('SSL Port'),
-	'number',
-	$pconfig['pfb_dnsport_ssl'],
-	[ 'min' => 1, 'max' => 65535, 'placeholder' => 'Enter DNSBL VIP address' ]
-))->setHelp('Example ( 8443 )<br />Enter a &emsp;<strong>single PORT</strong> &emsp;that is in the range of 1 - 65535<br />'
-		. 'This Port must not be in use by any other process.'
-);
-
-// Add option to disable DNSBL logging in python and utilize the DNSBL Webserver (excluding nullblocking events)
 $section->addInput(new Form_Checkbox(
-	'pfb_py_nolog',
-	gettext('DNSBL Event Logging') . '(py)',
+	'pfb_dnsbl_lenient',
+	gettext('Download Schemes'),
 	'Enable',
-	$pconfig['pfb_py_nolog'] === 'on' ? true:false,
+	pfb_cfg_toggle_read($pconfig['pfb_dnsbl_lenient']) === PfbToggle::On,
 	'on'
-))->setHelp('Disable event logging in Unbound python mode and utilize the DNSBL Webserver. Typically used when an upstream LAN DNS server is utilized.<br />'
-	. 'Null blocked events will still be logged via python.');
-
-$form->add($section);
-
-$section = new Form_Section('DNSBL Configuration');
-
-$group = new Form_Group('Permit Firewall Rules');
-$group->add(new Form_Checkbox(
-	'pfb_dnsbl_rule',
-	NULL,
-	gettext('Enable'),
-	$pconfig['pfb_dnsbl_rule'] === 'on' ? true:false,
-	'on'
-))->setWidth(7)
-  ->setHelp('This will create \'Floating\' Firewall permit rules to allow traffic from the Selected Interface(s) to access<br />'
-		. 'the <strong>DNSBL Webserver</strong>. (ICMP and Webserver ports only).'
-		. '<br /><br />'
-		. 'This option is not designed to bypass DNSBL for the non-selected LAN segments<br />'
-		. 'This option is only required for networks with multiple LAN Segments.');
-
-$group->add(new Form_Select(
-	'dnsbl_allow_int',
-	NULL,
-	$pconfig['dnsbl_allow_int'],
-	$options_dnsbl_interface,
-	TRUE
-))->setAttribute('style', 'width: auto')
-  ->setAttribute('size', $options_dnsbl_interface_cnt);
-$section->add($group);
+))->setHelp('How feed lines are parsed: strip scheme:// and URL paths, or skip those lines.'
+		. '<div class="infoblock">'
+		. 'Parse DNSBL feed lines permissively: any <strong>scheme://</strong> is stripped and URL paths are removed.<br />'
+		. 'When disabled (strict), lines with an invalid scheme (e.g. <strong>123://</strong>) or a URL path are skipped and logged.<br />'
+		. 'New installs default to disabled (strict); upgraded installs keep the permissive behaviour.'
+		. '</div>');
 
 $section->addInput(new Form_Select(
 	'global_log',
@@ -2704,238 +2848,760 @@ $section->addInput(new Form_Select(
   ->setAttribute('style', 'width: auto');
 
 $section->addInput(new Form_Select(
+	'global_log_mode',
+	'Global Application Mode',
+	$pconfig['global_log_mode'],
+	$options_global_log_mode
+))->setHelp($options_global_log_mode_txt)
+  ->setAttribute('style', 'width: auto');
+
+$section->addInput(new Form_Checkbox(
+	'tld_allow',
+	gettext('Allow Only Selected Domain Suffixes'),
+	'Enable',
+	pfb_cfg_toggle_read($pconfig['tld_allow']) === PfbToggle::On,
+	'on'
+))->setHelp('Enable <strong>Allow Only Selected Domain Suffixes</strong> (' . number_format($tld_total) . ' TLDs available). '
+		. 'This will block all TLDs that are not specifically selected. '
+		. pfb_list_section_help_note(['TLD Allow list'], TRUE));
+
+$form->add($section);
+
+$section = new Form_Section('DNSBL Webserver Configuration', 'dnsbl_webserver', COLLAPSIBLE|SEC_CLOSED);
+$section->addInput(new Form_StaticText(
+	'Deprecated',
+	'<i class="fa fa-exclamation-triangle text-warning"></i> <span class="text-warning">The DNSBL WebServer/VIP response is deprecated: prefer Null Blocking. '
+	. 'The web server, its NAT rules and the VIP run only while a DNSBL Group, the Blacklist category or a built-in block answers with it.</span>'
+));
+
+$section->addInput(new Form_Select(
+	'dnsbl_interface',
+	gettext('Web Server Interface'),
+	$pconfig['dnsbl_interface'],
+	$options_dnsbl_interface_all
+))->setHelp('Select the interface which DNSBL Web Server will Listen on.<br />'
+	. 'Default: <strong>Localhost (ports 80/443)</strong> - Selected Interface should be a Local Interface only.');
+
+$section->addInput(new Form_Checkbox(
+	'pfb_dnsbl_nonat',
+	gettext('Auto NAT'),
+	gettext('Disable automatic NAT rule creation'),
+	(pfb_cfg_toggle_read($pconfig['pfb_dnsbl_nonat']) === PfbToggle::On),
+	'on'
+))->setHelp('When set, pfBlockerNG will not auto-create the DNSBL NAT port-forward rules (non-Localhost interface only); manage them manually.');
+
+// [ ADR-13 ] Compute the address(es) the package WOULD auto-create, for the currently
+// selected DNSBL Web Server interface, so the UI can pre-fill them and detect conflict
+// exhaustion. pfb_dnsbl_auto_vip_address() returns a family's existing marked VIP address, else the
+// first free candidate from pfb_dnsbl_vip_candidates() (null when every candidate conflicts). A v6 VIP
+// is only relevant when the DNS Resolver listens on IPv6 (pfb_unbound_listens_v6()); otherwise v6 is not required.
+$pfb_auto_iface		= $pconfig['dnsbl_interface'] ?: 'lo0';
+$pfb_auto_v6_needed	= pfb_unbound_listens_v6();
+$pfb_auto_vip4		= pfb_dnsbl_auto_vip_address(AF_INET, $pfb_auto_iface);
+$pfb_auto_vip6		= $pfb_auto_v6_needed ? pfb_dnsbl_auto_vip_address(AF_INET6, $pfb_auto_iface) : null;
+
+// Conflict exhaustion: v4 is always required; v6 only when the resolver listens on it.
+// When no free candidate exists for a required family the checkbox is rendered disabled
+// with a warning, so auto-create can never be enabled into a known-conflicting state.
+$pfb_auto_exhausted	= ($pfb_auto_vip4 === null) || ($pfb_auto_v6_needed && $pfb_auto_vip6 === null);
+
+$vips = pfb_get_vips();
+
+// [ ADR-13 ] The "Create VIPs automatically" toggle on its OWN row, above the
+// manual VIP selects. Its explanation lives in the group help UNDER the fields,
+// not on the checkbox: a long inline checkbox help renders as a very tall, narrow
+// column that towers over the rest of the section.
+$pfb_auto_chk = new Form_Checkbox(
+	'pfb_dnsvip_auto',
+	gettext('Auto VIP'),
+	gettext('Create VIPs automatically'),
+	(!$pfb_auto_exhausted && pfb_cfg_toggle_read($pconfig['pfb_dnsvip_auto']) === PfbToggle::On),
+	'on'
+);
+if ($pfb_auto_exhausted) {
+	$pfb_auto_chk->setAttribute('disabled', 'disabled');
+}
+$section->addInput($pfb_auto_chk);
+
+$group = new Form_Group('DNSBL Virtual IP');
+$group->add(new Form_Select(
+	'pfb_dnsvip4',
+	gettext('IPv4 VIP'),
+	$pconfig['pfb_dnsvip4'],
+	pfb_get_vip_options(AF_INET)
+))->setWidth(4)->setHelp('IPv4 Virtual IP');
+$group->add(new Form_Select(
+	'pfb_dnsvip6',
+	gettext('IPv6 VIP'),
+	$pconfig['pfb_dnsvip6'],
+	pfb_get_vip_options(AF_INET6)
+))->setWidth(4)->setHelp('IPv6 Virtual IP (optional)');
+
+// Help under the side-by-side VIP fields: the original intro, a line break at the
+// SENTENCE boundary (never mid-sentence), then one concise line covering both
+// modes. "VIP"/"Virtual IP" used consistently (no "IP-Alias VIP" jargon); the
+// address/lifecycle detail belongs in the docs.
+$pfb_vip_help = 'Deprecated: a VIP is only needed while a DNSBL block answers with the WebServer/VIP mechanism. '
+	. 'Blocked names are answered with the selected VIP address, where the DNSBL web server shows the block page. '
+	. 'It should be in an isolated range not already used on the network.<br />'
+	. 'Enable <strong>Create VIPs automatically</strong> to have pfBlockerNG manage it, or select one '
+	. 'manually — create it first at '
+	. '<a target="_blank" rel="noopener noreferrer" href="/firewall_virtual_ip.php">Firewall &gt; Virtual IPs</a>.';
+if ($pfb_auto_exhausted) {
+	$pfb_vip_help .= '<br /><i class="fa fa-exclamation-triangle text-warning"></i> '
+		. '<span class="text-warning">No free auto-create address is available — free one of the '
+		. 'auto-create candidates, or select a VIP manually.</span>';
+}
+$group->setHelp($pfb_vip_help);
+$section->add($group);
+
+$section->addInput(new Form_Input(
+	'pfb_dnsport',
+	gettext('Port'),
+	'number',
+	$pconfig['pfb_dnsport'],
+	[ 'min' => 1, 'max' => 65535, 'placeholder' => 'Enter DNSBL Listening Port' ]
+))->setHelp('Example ( 8081 ) &mdash; a single PORT in the range 1 - 65535. '
+		. 'Applies when <strong>Web Server Interface</strong> is not <strong>Localhost</strong>.'
+		. '<div class="infoblock">This Port must not be in use by any other process.</div>'
+);
+
+$section->addInput(new Form_Input(
+	'pfb_dnsport_ssl',
+	gettext('SSL Port'),
+	'number',
+	$pconfig['pfb_dnsport_ssl'],
+	[ 'min' => 1, 'max' => 65535, 'placeholder' => 'Enter DNSBL SSL Listening Port' ]
+))->setHelp('Example ( 8443 ) &mdash; a single PORT in the range 1 - 65535. '
+		. 'Applies when <strong>Web Server Interface</strong> is not <strong>Localhost</strong>.'
+		. '<div class="infoblock">This Port must not be in use by any other process.</div>'
+);
+
+// Add option to disable DNSBL logging and utilize the DNSBL Webserver (excluding nullblocking events)
+$section->addInput(new Form_Checkbox(
+	'pfb_py_nolog',
+	gettext('Log VIP blocks via web server'),
+	'Enable',
+	pfb_cfg_toggle_read($pconfig['pfb_py_nolog']) === PfbToggle::On,
+	'on'
+))->setHelp('Stop the DNS Resolver from logging blocks answered with the DNSBL VIP (<strong>DNSBL WebServer/VIP (deprecated)</strong> mode); the DNSBL web server logs the requests that reach it instead. Other modes\' logging is unchanged: Null Blocking, NXDOMAIN and NODATA (logging) events are still logged. Use this when clients query through another LAN DNS server.');
+
+
+$section->addInput(new Form_Checkbox(
+	'pfb_dnsbl_rule',
+	gettext('Permit Firewall Rules'),
+	gettext('Enable'),
+	pfb_cfg_toggle_read($pconfig['pfb_dnsbl_rule']) === PfbToggle::On,
+	'on'
+))->setHelp('<p><strong>Permit Firewall Rules</strong> creates floating permit rules so clients on the selected <strong>Interface(s)</strong> can reach the DNSBL web server.</p>'
+		. '<div class="infoblock">'
+		. '<p>For example, a guest VLAN may block access to other local networks. If a blocked name resolves to the DNSBL VIP, these rules let clients reach its block page without opening access to the rest of the network. ICMP echo requests are also allowed so you can test reachability with ping.</p>'
+		. '<p>Use this only when <strong>DNSBL WebServer/VIP (deprecated)</strong> is in use and existing firewall rules prevent access to its address. Multiple VLANs alone do not require it. It is not needed for null responses, NXDOMAIN or NODATA, and it does not let clients bypass DNSBL.</p>'
+		. '</div>');
+
+$section->addInput(new Form_Select(
+	'dnsbl_allow_int',
+	gettext('Interface(s)'),
+	$pconfig['dnsbl_allow_int'],
+	$options_dnsbl_interface,
+	TRUE
+))->setAttribute('style', 'width: auto')
+  ->setAttribute('size', $options_dnsbl_interface_cnt)
+  ->setHelp('Interface(s) permitted to reach the DNSBL web server by <strong>Permit Firewall Rules</strong> above.');
+
+$section->addInput(new Form_Select(
 	'dnsbl_webpage',
 	'Blocked Webpage',
 	$pconfig['dnsbl_webpage'],
 	$options_dnsbl_webpage
-))->sethelp('Default: <strong>dnsbl_default.php</strong><br />Select the DNSBL Blocked Webpage.<br /><br />'
-	. 'Custom block web pages can be added to: <strong>/usr/local/www/pfblockerng/www/</strong> folder.')
+))->sethelp('Default: <code>dnsbl_default.php</code><br />Select the <strong>Blocked Webpage</strong>.<br /><br />'
+	. 'Custom block web pages can be added to <code>/usr/local/www/pfblockerng/www/</code>.')
   ->setAttribute('style', 'width: auto')
   ->setAttribute('size', $options_dnsbl_webpage_cnt);
+$form->add($section);
+
+$section = new Form_Section('Public-suffix handling', 'dnsbl_suffix', COLLAPSIBLE|SEC_CLOSED);
+
+// issue #2371: feed-at-suffix policy selects. Feed-wide and independent of Wildcard
+// Blocking (and of each other) -- deliberately NOT behind a hideCheckbox() show/hide,
+// so placement here (near Wildcard Blocking, for topical proximity) never implies a
+// dependency on it. Applies only to Feed-provenance rows; a Custom List or a sovereign
+// ABP list entry is never affected by either select.
+$psl_feed_policy_options = array(
+	'ignore'	=> 'Ignore entirely',
+	'apex'		=> 'Block the suffix apex only',
+	'honor'		=> 'Honor list rules',
+);
+$psl_feed_policy_help = '<div class="infoblock"><ul>'
+	. '<li><strong>Ignore entirely</strong> - the feed entry is dropped (counted in the reject stats).</li>'
+	. '<li><strong>Block the suffix apex only</strong> - only the exact suffix name is blocked; this entry no longer affects names under the suffix (other list entries still apply).</li>'
+	. '<li><strong>Honor list rules</strong> - the list is honored as written, including an explicit ABP wildcard rule that may still blanket the suffix.</li>'
+	. '</ul>'
+	. 'Applies only to downloaded feed entries; <strong>Custom List</strong> entries are not affected. Intentional whole-suffix blocking belongs in '
+	. '<strong>TLD Blacklist</strong> below (dotted entries supported).</div>';
+
+$section->addInput(new Form_Select(
+	'pfb_psl_feed_private_policy',
+	gettext('Feed entries at shared-hosting suffixes (PSL PRIVATE)'),
+	$pconfig['pfb_psl_feed_private_policy'],
+	$psl_feed_policy_options
+))->setHelp('Applies only to a Feed entry named exactly at a PSL PRIVATE suffix (shared domains such as github.io -- not private DNS).'
+	. $psl_feed_policy_help);
+
+$section->addInput(new Form_Select(
+	'pfb_psl_feed_icann_policy',
+	gettext('Feed entries at public suffixes (ICANN)'),
+	$pconfig['pfb_psl_feed_icann_policy'],
+	$psl_feed_policy_options
+))->setHelp('Applies only to a Feed entry named exactly at an ICANN (public) suffix.'
+	. $psl_feed_policy_help);
 
 $section->addInput(new Form_Checkbox(
-	'pfb_cache',
-	gettext('Resolver cache'),
+	'pfb_psl_include_private',
+	gettext('Recognize Shared-Hosting Suffixes (PSL PRIVATE)'),
 	'Enable',
-	$pconfig['pfb_cache'] === 'on' ? true:false,
+	$pconfig['pfb_psl_include_private'] === PfbToggle::On,
 	'on'
-))->setHelp('Default: <strong>Enabled</strong><br />Enable the backup and restore of the DNS Resolver Cache on DNSBL Update|Reload|Cron events');
+))->setHelp('Recognize the PSL PRIVATE section when determining the registrable boundary. '
+		. 'Applies when <strong>Wildcard Blocking</strong> is enabled.'
+		. '<div class="infoblock">A suffix apex is never wildcarded. PSL PRIVATE describes shared domains such as github.io; it does not mean private DNS.</div>');
 
-// Create page anchor for DNSBL Whitelist
-$section->addInput(new Form_StaticText(
-	NULL,
-	'<div id="Whitelist"></div>'));
+$section->addInput(new Form_Checkbox(
+	'pfb_psl_allow_private',
+	gettext('Allow Shared-Hosting Suffixes (PSL PRIVATE)'),
+	'Enable',
+	$pconfig['pfb_psl_allow_private'] === PfbToggle::On,
+	'on'
+))->setHelp('With <strong>Allow Only Selected Domain Suffixes</strong> enabled, also allow names under shared-hosting suffixes such as <code>github.io</code> when their parent TLD is not selected.'
+		. '<div class="infoblock">The suffix apex itself is never wildcarded.</div>');
 
 $form->add($section);
 
-$suppression_text = 'No Regex Entries Allowed!&emsp;
-			<div class="infoblock">
-				Enter one &emsp; <strong>Domain Name</strong>&emsp; per line<br />
-				Prefix Domain with a "." to Whitelist all Sub-Domains. &emsp;IE: (.example.com)<br />
-				You may use "<strong>#</strong>" after any Domain name to add comments. &emsp;IE: (example.com # Whitelist example.com)<br />
-				This List is stored as \'Base64\' format in the config.xml file.<br /><br />
-
-				<span class="text-danger">Note: </span>These entries are only Whitelisted when Feeds are downloaded or on a
-				<span class="text-danger">\'Force Reload\'.</span><br />
-
-				Use the Alerts Tab \'+\' Whitelist Icon to immediately remove a Domain (and any associated CNAMES) from Unbound DNSBL.<br />
-				Note: When manually adding a Domain to the Whitelist, check for any associated CNAMES<br />
-				&emsp; ie: \'drill @8.8.8.8 example.com\'
-			</div>';
-
-$section = new Form_Section('DNSBL Whitelist', 'DNSBL_Whitelist_customlist', COLLAPSIBLE|SEC_CLOSED);
-$section->addInput(new Form_Textarea(
-	'suppression',
+$section = new Form_Section('TLD Allow list', 'tld_allow_pickers', COLLAPSIBLE|SEC_CLOSED);
+$section->addInput(new Form_StaticText(
 	NULL,
-	$pconfig['suppression']
+	'<div id="dnsbl_python_tld_allow_text">'
+	. '<strong>By default</strong> \'ARPA\' and the pfSense TLD \'' . strtoupper($local_tld) . '\' are allowed.<br />'
+	. 'If no TLDs are selected, the following are added by default [ COM, NET, ORG, EDU, CA, CO, IO ]<br /><br />'
+	. 'Picker: <strong>IANA root TLDs</strong>. Detailed TLD listings : <a target=_blank rel="noopener noreferrer" href="http://www.iana.org/domains/root/db">Root Zone Top-Level Domains.</a><br />'
+	. '<strong>Legend</strong>:<br />'
+	. '(*) TLD is used by at least one DNSBL feed on the <strong>Feeds</strong> tab. Confirm the TLDs used by the selected feeds.<br />'
+	. '(!) TLD is listed by <a target=_blank rel="noopener noreferrer" href="https://www.spamhaus.org/statistics/tlds/">Spamhaus (Most Abused TLDs)</a><br /></div>'
+));
+
+$section->addInput(new Form_Checkbox(
+	'tld_allow_sort',
+	'',
+	'Enable',
+	pfb_cfg_toggle_read($pconfig['tld_allow_sort']) === PfbToggle::On,
+	'on'
+))->setHelp('Enable to sort TLDs alphabetically');
+
+$group = new Form_Group('TLD Group 1');
+foreach (array('gTLD', 'ccTLD', 'iTLD', 'bgTLD') as $key => $tld_type) {
+	if ($key == 2) {
+		$group = new Form_Group('TLD Group 2');
+	}
+	$count = count($tld_list[$tld_type]);
+
+	if (pfb_cfg_toggle_read($pconfig['tld_allow_sort']) === PfbToggle::On) {
+		ksort($tld_list[$tld_type]);
+	}
+
+	$group->add(new Form_Select(
+		'tld_allow_' . strtolower($tld_type),
+		'',
+		$pconfig['tld_allow_' . strtolower($tld_type)],
+		$tld_list[$tld_type],
+		TRUE
+	))->setHelp("{$tld_info[$tld_type]}<br />Total TLD Count: [{$count}]")
+	  ->setAttribute('size', '20')
+	  ->setWidth(4);
+
+	if ($key == 1 || $key == 3) { 
+		$section->add($group);
+	}
+}
+
+$form->add($section);
+
+$section = new Form_Section('DNSBL Control', 'dnsbl_control', COLLAPSIBLE|SEC_CLOSED);
+$section->addInput(new Form_Checkbox(
+	'pfb_control',
+	gettext('DNSBL Control'),
+	'Enable',
+	pfb_cfg_toggle_read($pconfig['pfb_control']) === PfbToggle::On,
+	'on'
+))->setHelp('Enabling this option will allow sending DNSBL control commands via the local CLI.'
+	. '<div class="infoblock" style="width: 90%;">'
+	. 'Commands are run on pfSense as root via the <code>pfblockerng dnsbl-control</code> CLI<br />'
+	. 'A disable is a temporary intervention, and will be reset on a restart of the Resolver<br />'
+	. 'These commands can be incorporated in CRON/Scheduler tasks or run manually as required<br />'
+	. 'All events are logged to <strong>Reports</strong> &gt; <strong>Alerts</strong><br /><br />'
+	. '<strong>Command Syntax:</strong><br />'
+	. '<table class="table table-bordered table-striped table-hover table-compact">'
+	. '	<thead>'
+	. '		<tr>'
+	. '			<th style="max-width: 10%">Description</th>'
+	. '			<th style="max-width: 85%">Command</th>'
+	. '			<th style="max-width: 5%">Notes</th>'
+	. '		</tr>'
+	. '	</thead>'
+	. '	<tbody>'
+	. '		<tr><td>Enable DNSBL</td><td><code>pfblockerng dnsbl-control enable</code></td><td></td></tr>'
+	. '		<tr><td>Disable DNSBL</td><td><code>pfblockerng dnsbl-control disable</code></td><td></td></tr>'
+	. '		<tr><td>Disable DNSBL for duration</td><td><code>pfblockerng dnsbl-control disable seconds</code></td><td>Seconds: 1-3600</td></tr>'
+	. '		<tr><td>Add a Global bypass IP</td><td><code>pfblockerng dnsbl-control addbypass 1.2.3.4</code></td><td></td></tr>'
+	. '		<tr><td>Add a Global bypass IP for duration</td><td><code>pfblockerng dnsbl-control addbypass 1.2.3.4 seconds</code></td><td>Seconds: 1-3600</td></tr>'
+	. '		<tr><td>Remove a Global bypass IP</td><td><code>pfblockerng dnsbl-control removebypass 1.2.3.4</code></td><td></td></tr>'
+	. '	</tbody>'
+	. '</table>'
+	. '</div>');
+
+$section->addInput(new Form_Checkbox(
+	'pfb_control_legacy',
+	gettext('DNSBL Control (legacy DNS TXT)'),
+	'Enable',
+	pfb_cfg_toggle_read($pconfig['pfb_control_legacy']) === PfbToggle::On,
+	'on'
+))->setHelp('<span class="text-danger">Deprecated</span> - re-enable the legacy DNS TXT control transport (drill TXT python_control.*).'
+	. '<div class="infoblock" style="width: 90%;">'
+	. 'This option is <strong>deprecated</strong>, <strong>less secure</strong>, and will be <strong>removed in a future release</strong>.<br />'
+	. 'It only takes effect when <strong>DNSBL Control</strong> above is enabled. Leave it off and use the CLI instead.<br />'
+	. 'Migrate any CRON/Scheduler tasks from drill TXT python_control.* to the pfblockerng dnsbl-control CLI shown above.'
+	. '</div>');
+$form->add($section);
+
+
+// DNSBL Group Policy section — placed directly below the main 'DNSBL' section (which
+// holds its pfb_gp enable checkbox) and above the encrypted-DNS sections. The pfb_gp
+// checkbox JS toggles this section's visibility by its 'Python_Group_Policy' id.
+$section = new Form_Section('DNSBL Group Policy', 'Python_Group_Policy', COLLAPSIBLE|SEC_CLOSED);
+$section->addInput(new Form_StaticText(
+	NULL,
+	'Clients in <strong>Bypass IPs</strong> bypass DNSBL.'));
+
+$section->addInput(new Form_Textarea(
+	'pfb_gp_bypass_list',
+	'Bypass IPs',
+	$pconfig['pfb_gp_bypass_list']
 ))->removeClass('form-control')
   ->addClass('row-fluid col-sm-12')
   ->setAttribute('columns', '90')
   ->setAttribute('rows', '15')
   ->setAttribute('wrap', 'off')
-  ->setAttribute('style', 'background:#fafafa; width: 100%')
-  ->setHelp($suppression_text);
+  ->setAttribute('style', 'width: 100%')
+  ->setHelp('Enter the Local LAN IPs or CIDR subnets (IPv4 or IPv6, one per line) that will bypass DNSBL Blocking.<br />'
+		. '<strong>Note:</strong> In rare cases, when a bypassed client and another client ask for the same name at the same moment, '
+		. 'the DNS Resolver sends both of them the result decided for one of them (bypassed or blocked).');
+
+$form->add($section);
+
+// DNS Bypass Prevention: DNS Redirect + DoT/DoQ Block + DoH/DoT/DoQ Blocking.
+// [ ADR-36 ] DNS Redirect section — placed above the DoH/DoT/DoQ Blocking section.
+// Redirects outbound port-53 DNS traffic on the selected interfaces to the
+// firewall's own resolver. DoH/DoT bypass is NOT covered.
+$section = new Form_Section('DNS Bypass Prevention', 'dnsbl_bypass', COLLAPSIBLE|SEC_CLOSED);
+$section->addInput(new Form_StaticText(
+	'',
+	'<style>' . pfb_form_subhdr_css_rules() . '</style>'
+));
+$section->add(pfb_form_subhdr('DNS Redirect'));
+
+$group = new Form_Group('DNS Redirect');
+$group->add(new Form_Checkbox(
+	'dnsbl_redir',
+	NULL,
+	gettext('Enable'),
+	pfb_cfg_toggle_read($pconfig['dnsbl_redir']) === PfbToggle::On,
+	'on'
+))->setWidth(7)
+  ->setHelp('Redirects outbound port-53 DNS traffic on the selected interface(s) to the firewall\'s own resolver.'
+		. '<div class="infoblock">Keeps clients on the local DNS resolver so DNSBL stays effective.<br />'
+		. 'The firewall itself is always exempt. Does not cover DoH/DoT/DoQ traffic (use the DoH/DoT/DoQ Blocking section below for that).</div>');
+
+// [ ADR-36/37 ] Build the quick-fill interface union (inbound + outbound from IP settings).
+// These are the pfBlockerNG firewall-rule interfaces; the quick-fill populates the DNS
+// Redirect AND DoT/DoQ Block selects to match that set with one click. $options_dnsbl_redir_int
+// and $options_dnsbl_dot_block_int are both aliases of $options_dnsbl_interface (identical
+// interface list), so this one computed set/JSON serves both sections -- see the DoT/DoQ
+// Block section below, which reuses it via a JS alias instead of recomputing it.
+$pfb_redir_fill_ifaces = array_unique(array_filter(array_merge(
+	array_filter(array_map('trim', explode(',', PfbConfig::read('ip/inbound_interface')))),
+	array_filter(array_map('trim', explode(',', PfbConfig::read('ip/outbound_interface'))))
+)));
+// Restrict to only interfaces present in the DNS Redirect option list.
+$pfb_redir_fill_ifaces = array_values(array_intersect($pfb_redir_fill_ifaces, array_keys($options_dnsbl_redir_int)));
+$pfb_redir_fill_json   = json_encode($pfb_redir_fill_ifaces);
+
+// [ ADR-36/37 ] Address-type firewall alias names for the Exception Alias autocomplete on the
+// DNS Redirect + DoT/DoQ Block fields. Restrict to host/network/urltable (address) aliases —
+// a port alias cannot be a rule source. The field still accepts free text; existence is
+// enforced server-side (pfb_validate_dns_redirect_post / pfb_validate_dot_block_post).
+$pfb_alias_names = array();
+foreach (config_get_path('aliases/alias', []) as $pfb_alias_entry) {
+	$pfb_alias_entry_name = (string)($pfb_alias_entry['name'] ?? '');
+	// Skip pfBlockerNG-managed aliases (pfB_*): they are not valid exception aliases
+	// (rejected server-side in pfb_validate_dns_redirect_post / pfb_validate_dot_block_post).
+	if (str_starts_with($pfb_alias_entry_name, PFB_MANAGED_FILTER_PFX)) {
+		continue;
+	}
+	if (in_array($pfb_alias_entry['type'] ?? '', pfb_exclude_alias_types(), TRUE)) {
+		$pfb_alias_names[] = $pfb_alias_entry_name;
+	}
+}
+$pfb_alias_names_json = json_encode(array_values(array_filter(array_unique($pfb_alias_names), 'strlen')));
+
+$group->add(new Form_Select(
+	'dnsbl_redir_int',
+	NULL,
+	$pconfig['dnsbl_redir_int'],
+	$options_dnsbl_redir_int,
+	TRUE
+))->setAttribute('style', 'width: auto')
+  ->setAttribute('size', $options_dnsbl_interface_cnt);
+$group->setHelp('<a href="#" id="pfb_redir_fill" onclick="pfb_fill_interfaces(\'dnsbl_redir_int\', pfb_redir_fill_ifaces); return false;">'
+	. 'Fill from IP Interfaces</a>. Selects interfaces from <strong>Inbound Firewall Rules</strong> and <strong>Outbound Firewall Rules</strong> on <strong>IP</strong>.');
+$section->add($group);
+
+$section->addInput(new Form_Input(
+	'dnsbl_redir_exclude',
+	gettext('DNS Redirect Exception Alias'),
+	'text',
+	$pconfig['dnsbl_redir_exclude'],
+	['placeholder' => 'Firewall alias name (optional)']
+))->setHelp('Optional. Name of an existing Firewall Alias. Hosts/subnets in this alias bypass the DNS redirect.<br />'
+		. 'The alias must be created separately at <a href="/firewall_aliases.php" target="_blank" rel="noopener noreferrer">Firewall &gt; Aliases</a>.');
+
+
+// [ ADR-37 ] DoT/DoQ Block section — placed adjacent to DNS Redirect.
+// Blocks port-853 DoT (TCP) and DoQ (UDP) traffic on the selected interfaces.
+// DoH (port 443) is not covered here; it is addressed by the DoH-IP feed and DNSBL domain blocking.
+$section->add(pfb_form_subhdr('DoT/DoQ Block'));
+
+$group = new Form_Group('DoT/DoQ Block');
+$group->add(new Form_Checkbox(
+	'dnsbl_dot_block',
+	NULL,
+	gettext('Enable'),
+	pfb_cfg_toggle_read($pconfig['dnsbl_dot_block']) === PfbToggle::On,
+	'on'
+))->setWidth(7)
+  ->setHelp('Blocks DNS-over-TLS (TCP 853) and DNS-over-QUIC (UDP 853) on the selected interface(s).'
+		. '<div class="infoblock">DoH (port 443) is <strong>not</strong> blocked here — blocking 443 would break all HTTPS. '
+		. 'DoH is addressed by the DoH-IP feed and DNSBL domain blocking.<br />'
+		. 'The firewall itself is always exempt. Hosts in the exception alias are also exempt. '
+		. 'The exception alias must exist at '
+		. '<a href="/firewall_aliases.php" target="_blank" rel="noopener noreferrer">Firewall &gt; Aliases</a> before use.</div>');
+
+// [ ADR-37 ] Quick-fill interface union -- identical to the ADR-36 DNS Redirect fill above
+// ($options_dnsbl_dot_block_int is the same interface list as $options_dnsbl_redir_int), so
+// this section's "Fill" button reuses that already-computed set via a JS alias (see below).
+$group->add(new Form_Select(
+	'dnsbl_dot_block_int',
+	NULL,
+	$pconfig['dnsbl_dot_block_int'],
+	$options_dnsbl_dot_block_int,
+	TRUE
+))->setAttribute('style', 'width: auto')
+  ->setAttribute('size', $options_dnsbl_interface_cnt);
+$group->setHelp('<a href="#" id="pfb_dot_block_fill" onclick="pfb_fill_interfaces(\'dnsbl_dot_block_int\', pfb_dot_block_fill_ifaces); return false;">'
+	. 'Fill from IP Interfaces</a>. Selects interfaces from <strong>Inbound Firewall Rules</strong> and <strong>Outbound Firewall Rules</strong> on <strong>IP</strong>.');
+$section->add($group);
+
+$section->addInput(new Form_Input(
+	'dnsbl_dot_block_exclude',
+	gettext('DoT/DoQ Exception Alias'),
+	'text',
+	$pconfig['dnsbl_dot_block_exclude'],
+	['placeholder' => 'Firewall alias name (optional)']
+))->setHelp('Optional. Name of an existing Firewall Alias. Hosts/subnets in this alias bypass the DoT/DoQ block.<br />'
+		. 'The alias must be created separately at <a href="/firewall_aliases.php" target="_blank" rel="noopener noreferrer">Firewall &gt; Aliases</a>.');
+
+$section->addInput(new Form_Select(
+	'dnsbl_dot_block_action',
+	gettext('Rule Action'),
+	pfb_dot_block_action($pconfig['dnsbl_dot_block_action']),
+	$options_dnsbl_dot_block_action
+))->setHelp('Default: <strong>Reject</strong><br />'
+		. 'Select the action for the DoT/DoQ block rules. <strong>Reject</strong> refuses the connection at once (clients may fall back to plain DNS), while <strong>Block</strong> silently drops it.')
+  ->setAttribute('style', 'width: auto');
+
+$section->addInput(new Form_Checkbox(
+	'dnsbl_dot_block_floating',
+	gettext('Floating Rule'),
+	gettext('Use a single floating rule instead of one rule per interface'),
+	pfb_cfg_toggle_read($pconfig['dnsbl_dot_block_floating']) === PfbToggle::On,
+	'on'
+))->setHelp('Default: <strong>off</strong> (one rule per selected interface). When enabled, one floating rule covers all selected interfaces instead of one rule each.'
+		. '<div class="infoblock">A single floating rule (direction <strong>in</strong>, quick) is created over all selected interfaces. '
+		. 'The action, interface selection, and exception alias all apply unchanged.</div>');
+
+
+$section->add(pfb_form_subhdr('DNS over HTTPS/TLS/QUIC'));
+
+$section->addInput(new Form_Select(
+	'safesearch_doh',
+	gettext('DoH/DoT/DoQ Blocking'),
+	$pconfig['safesearch_doh'],
+	$options_safesearch_doh
+))->setHelp('Block well-known DNS over HTTPS/TLS/QUIC (DoH/DoT/DoQ) providers.'
+		. '<div class="infoblock">Modern browsers and devices often use encrypted DNS that bypasses DNSBL; blocking these providers keeps clients on the local resolver so DNSBL stays effective. '
+		. 'DNS requests to these domains will return NXDOMAIN. '
+		. 'A DoH/DoT/DoQ <a href="/pfblockerng/pfblockerng_feeds.php" target="_blank" rel="noopener noreferrer">Feed</a> may cover more providers and update more often than this built-in list.</div>')
+  ->setAttribute('style', 'width: auto');
+
+$section->addInput(new Form_Select(
+	'safesearch_doh_list',
+	gettext('DoH/DoT/DoQ Blocking List'),
+	$pconfig['safesearch_doh_list'],
+	$options_safesearch_doh_list,
+	TRUE
+))->setHelp('Select the DoH/DoT/DoQ providers to block.')
+  ->setAttribute('style', 'width: auto')
+  ->setAttribute('size', '20');
+
+$form->add($section);
+
+$regex_text = pfb_dnsbl_regex_help_render();
+
+$section = new Form_Section('Regex List', 'Python_regex_list', COLLAPSIBLE|SEC_CLOSED);
+$section->addInput(new Form_Textarea(
+	'pfb_regex_list',
+	'Regex List',
+	$pconfig['pfb_regex_list']
+))->removeClass('form-control')
+  ->addClass('row-fluid col-sm-12')
+  ->setAttribute('columns', '90')
+  ->setAttribute('rows', '15')
+  ->setAttribute('wrap', 'off')
+  ->setAttribute('style', 'width: 100%')
+  ->setHelp($regex_text);
+
+$form->add($section);
+
+$noaaaa_text = 'List of no-AAAA domains to block the (IPv6) AAAA DNS Resolution.<br /><br />
+		Enter a single domain per line.<br />
+		Prefix a domain with "." to apply the no-AAAA entry to all its subdomains, for example <code>.example.com</code>.<br /><br />
+		AAAA queries for domains in <strong>no-AAAA List</strong> get an empty answer (no IPv6 address). Other query types remain subject to DNSBL; use <strong>DNSBL Whitelist</strong> to allow a domain.';
+
+$section = new Form_Section('no-AAAA List', 'Python_noaaaa_list', COLLAPSIBLE|SEC_CLOSED);
+$section->addInput(new Form_Textarea(
+	'pfb_noaaaa_list',
+	'no-AAAA List',
+	$pconfig['pfb_noaaaa_list']
+))->removeClass('form-control')
+  ->addClass('row-fluid col-sm-12')
+  ->setAttribute('columns', '90')
+  ->setAttribute('rows', '15')
+  ->setAttribute('wrap', 'off')
+  ->setAttribute('style', 'width: 100%')
+  ->setHelp($noaaaa_text);
+
+$form->add($section);
+
+
+$section = new Form_Section('DNS Caching', 'dnsbl_caches', COLLAPSIBLE|SEC_CLOSED);
+$section->addInput(new Form_Checkbox(
+	'pfb_cache_flush',
+	gettext('Clear Resolver Cache'),
+	'Enable',
+	pfb_cfg_toggle_read($pconfig['pfb_cache_flush']) === PfbToggle::On,
+	'on'
+))->setHelp('Default: <strong>Disabled</strong><br />Clear Unbound\'s resolver cache after a DNSBL update without restarting Unbound.'
+	. '<div class="infoblock">When enabled, newly blocked domains take effect immediately when an allowed answer was already cached, but also discards unrelated answers and can temporarily increase DNS latency and upstream queries. '
+	. 'When disabled, cached allowed answers remain until their DNS TTL expires. Resolver restarts already clear the cache; exact Alerts actions use targeted flushing.</div>');
+
+$section->addInput(new Form_Input(
+	'pfb_py_cache_max',
+	gettext('Decision cache max entries'),
+	'number',
+	$pconfig['pfb_py_cache_max'],
+	['min' => 0, 'max' => 5000000, 'placeholder' => '10000']
+))->setHelp('Default: <strong>10000</strong><br />Maximum number of domains kept in the DNSBL per-domain decision cache.'
+	. '<div class="infoblock">It is an <strong>LRU</strong> cache: frequently-queried domains stay resident and the least-recently-used entries are evicted at the cap. '
+	. 'Roughly under 1 KB of RAM per entry. Set to <strong>0</strong> for unlimited (no eviction). '
+	. '</div>');
+
+// issue #1881: the "#Whitelist" page anchor that used to live here was its own empty
+// Form_StaticText row -- every .form-group carries a theme border-bottom, so it drew a
+// separator with nothing above it. Its only consumer, the dashboard widget, now links
+// the DNSBL Whitelist section's own id (#DNSBL_Whitelist_customlist) instead.
+$form->add($section);
+
+$whitelist_text = 'Regex entries are not allowed.
+			<div class="infoblock">
+				Enter one domain name per line.<br />
+				Prefix a domain with "." to allow all its subdomains, for example <code>.example.com</code>.<br />
+				You may use "<strong>#</strong>" after any domain name to add comments, for example <code>example.com # Whitelist example.com</code>.<br />
+
+				Use the <strong>+</strong> Whitelist icon on <strong>Reports</strong> &gt; <strong>Alerts</strong> to remove a domain, and its CNAMEs, from DNSBL immediately.<br />
+				When adding a domain manually, check for associated CNAMEs, for example with <code>drill @8.8.8.8 example.com</code>.
+			</div>';
+
+$pfb_dnsbl_anchor_layout = pfb_dnsbl_anchor_layout_render();
+$section = new Form_Section('DNSBL Whitelist', $pfb_dnsbl_anchor_layout['whitelist'], COLLAPSIBLE|SEC_CLOSED);
+$section->addInput(new Form_Textarea(
+	'whitelist',
+	NULL,
+	$pconfig['whitelist']
+))->removeClass('form-control')
+  ->addClass('row-fluid col-sm-12')
+  ->setAttribute('columns', '90')
+  ->setAttribute('rows', '15')
+  ->setAttribute('wrap', 'off')
+  ->setAttribute('style', 'width: 100%')
+  ->setHelp($whitelist_text);
 
 $form->add($section);
 
 $section = new Form_Section('TOP1M Whitelist', 'TOP1M_Whitelist', COLLAPSIBLE|SEC_CLOSED);
-$top1m_text = 'The TOP1M feed can be used to whitelist the most popular Domain names to avoid false positives.<br />
-		Note: The domains listed in the TOP1M *may* be malicious in nature, consider limiting this feature.<br /><br />
-		Whitelist(s) available:<br />
-
-		<ul>
-			<li><a target="_blank" href="https://tranco-list.eu/">Tranco TOP1M</a></li>
-			<li><a target="_blank" href="https://s3-us-west-1.amazonaws.com/umbrella-static/index.html">Cisco Umbrella TOP1M</a></li>
-			<li><a target="_blank" href="https://aws.amazon.com/alexa-top-sites/">Alexa TOP1M (out-of-date)</a></li>
-		</ul>
-		To use this feature, select the number of \'Top Domains\' to whitelist. You can also \'include\' which TLDs to whitelist.
-
-		<div class="infoblock">
-			<span class="text-danger">Recommendation: </span>
-			<ul>TOP1M also contains the \'Top\' AD Servers, so its recommended to configure the first DNSBL Alias with AD Server<br />
-				(ie. yoyo, Adaway...) based feeds. TOP1M whitelisting can be disabled for this first defined Alias.<br /><br />
-				Generally, TOP1M should be used for feeds that post full URLs like PhishTank, OpenPhish or MalwarePatrol.<br /><br />
-				To bypass a TOP1M Domain, add the Domain to the first defined Alias \'Custom Block list\' with TOP1M disabled in this alias.<br />
-				When enabled, this list will be automatically updated once per month along with the MaxMind Database.
-			</ul>
-		</div>';
+$top1m_text = '<p><span class="text-danger"><strong>Warning:</strong></span> Popular-domain lists can include advertising or malicious domains.</p>'
+		. '<p>TOP1M lists the most popular domain names. Only DNSBL groups with <strong>TOP1M Whitelist</strong> ticked allow them. To use this feature:</p>'
+		. '<ul>'
+		. '<li>Select <strong>Enable</strong> on <strong>TOP1M</strong>.</li>'
+		. '<li>Choose the provider under <strong>Type</strong>.</li>'
+		. '<li>Choose the number of allowed domains under <strong>Domain count</strong>.</li>'
+		. '<li>Limit eligible suffixes under <strong>TLD Inclusion</strong>.</li>'
+		. '</ul>'
+		. '<p>Providers:</p>'
+		. '<ul>'
+		. '<li><a target="_blank" rel="noopener noreferrer" href="https://tranco-list.eu/">Tranco TOP1M</a></li>'
+		. '<li><a target="_blank" rel="noopener noreferrer" href="https://s3-us-west-1.amazonaws.com/umbrella-static/index.html">Cisco Umbrella TOP1M</a></li>'
+		. '<li><a target="_blank" rel="noopener noreferrer" href="https://openpagerank.keywordseverywhere.com/top-10-million-domains">OpenPageRank TOP1M</a></li>'
+		. '<li><a target="_blank" rel="noopener noreferrer" href="https://majestic.com/reports/majestic-million">Majestic Million TOP1M</a> -- distributed under the <strong>Creative Commons Attribution (CC BY) 3.0</strong> License by: <a target="_blank" rel="noopener noreferrer" href="https://majestic.com">Majestic</a>, attribution required.</li>'
+		. '<li><a target="_blank" rel="noopener noreferrer" href="https://radar.cloudflare.com/domains">Cloudflare Radar</a> -- distributed under the <strong>Creative Commons Attribution-NonCommercial (CC BY-NC) 4.0</strong> License by: <a target="_blank" rel="noopener noreferrer" href="https://www.cloudflare.com">Cloudflare</a>, non-commercial use, attribution required. Requires a free <a target="_blank" rel="noopener noreferrer" href="https://developers.cloudflare.com/fundamentals/api/get-started/create-token/">Cloudflare API Token</a> entered below.</li>'
+		. '</ul>'
+		. '<div class="infoblock">'
+		. '<p><strong>Group scope:</strong> TOP1M is checked only for groups with <strong>TOP1M Whitelist</strong> ticked. Clear the box on groups that carry advertising feeds, such as yoyo or Adaway. Other groups and Category feeds still block TOP1M domains.</p>'
+		. '<p>To block a TOP1M domain, add it to a group\'s <strong>Custom List</strong> and clear that group\'s <strong>TOP1M Whitelist</strong> box. Group order does not matter. The user\'s <strong>DNSBL Whitelist</strong> overrides every block.</p>'
+		. '<p>For a name in the TOP1M list, a ticked group no longer blocks the name or its <code>www.</code> form as a domain entry; deeper subdomains stay blocked. Regex rules are not filtered, so a regex from a ticked group can still block a listed name.</p>'
+		. '<p>When enabled, the list is checked for updates daily at the <strong>Default Schedule</strong> time. After an upgrade, run a DNSBL update to apply saved group settings.</p>'
+		. '</div>';
 
 $section->addInput(new Form_Checkbox(
-	'alexa_enable',
+	'top1m_enable',
 	gettext('TOP1M'),
 	'Enable',
-	$pconfig['alexa_enable'] === 'on' ? true:false,
+	pfb_cfg_toggle_read($pconfig['top1m_enable']) === PfbToggle::On,
 	'on'
 ))->setHelp($top1m_text);
 
 $section->addInput(new Form_Select(
-	'alexa_type',
+	'top1m_source',
 	gettext('Type'),
-	$pconfig['alexa_type'],
-	$options_alexa_type
-))->setHelp('Default: Tranco TOP1M. To change the TOP1M type, select type and Save, followed by a \'Force Reload - DNSBL\'');
+	$pconfig['top1m_source'],
+	$options_top1m_source
+))->setHelp('Default: <strong>Tranco TOP1M</strong>. To change the TOP1M type, select the type and Save, then run an Update -- this marks the source for reprocessing.');
+
+// ADR-59: masked, write-only token for a token-authenticated provider (currently only
+// Cloudflare Radar). Never populated from the stored value -- $pconfig['top1m_token'] is
+// only ever set here from a redisplayed $_POST on a validation error (like every other
+// field), never from PfbConfig::read(), so a plain GET always renders this field blank.
+// The JS toggle below (enable_top1m_token) shows it only for a provider whose 'auth' needs it.
+$section->addInput(new Form_Input(
+	'top1m_token',
+	gettext('API Token'),
+	'password',
+	$pconfig['top1m_token'] ?? '',
+	['placeholder' => 'Enter your Cloudflare Radar API Token -- leave blank to keep the current token']
+))->setHelp('Required for <strong>Cloudflare Radar</strong>. Leave blank on Save to keep the existing token. '
+		. 'Applies when the selected Type requires an API token.'
+		. '<div class="infoblock">The stored token is never displayed here.</div>')
+  ->setAttribute('autocomplete', 'off');
 
 $section->addInput(new Form_Select(
-	'alexa_count',
+	'top1m_count',
 	gettext('Domain count'),
-	$pconfig['alexa_count'],
-	$options_alexa_count
+	$pconfig['top1m_count'],
+	$options_top1m_count
 ))->sethelp('<strong>Default: Top 1k</strong><br />Select the <strong>number</strong> of TOP1M \'Top Domain global ranking\' to whitelist.');
 
 $section->addInput(new Form_Select(
-	'alexa_inclusion',
+	'top1m_inclusion',
 	gettext('TLD Inclusion'),
-	$pconfig['alexa_inclusion'],
-	$options_alexa_inclusion,
+	$pconfig['top1m_inclusion'],
+	$options_top1m_inclusion,
 	TRUE
 ))->setHelp('Select the TLDs for Whitelist. (Only showing the Top 150 TLDs)<br />'
 		. '<strong>Default: COM, NET, ORG, CA, CO, IO</strong><br /><br />'
-		. 'Detailed listing : <a target=_blank href="http://www.iana.org/domains/root/db">Root Zone Top-Level Domains.</a>'
+		. 'Detailed listing : <a target=_blank rel="noopener noreferrer" href="http://www.iana.org/domains/root/db">Root Zone Top-Level Domains.</a>'
 )->setAttribute('size', '20')
  ->setWidth(3);
 
 $form->add($section);
 
 $section = new Form_Section('TLD Exclusion List', 'TLD_Exclusion', COLLAPSIBLE|SEC_CLOSED);
-$tld_exclusion_text = 'Enter TLD(s) and/or Domain(s) to be excluded from the TLD function. These excluded TLDs/domains/sub-domains will be listed as-is.&emsp;
+$tld_exclusion_text = 'Domains or suffixes to exclude from <strong>Wildcard Blocking</strong>; they are blocked only as listed.
 			<div class="infoblock">
-				Enter one &emsp; <strong>Domain Name or TLD</strong>&emsp; per line<br />
+				Enter one <strong>domain name or TLD</strong> per line.<br />
 				No Regex Entries and no leading/trailing \'dot\' allowed!<br />
-				You may use "<strong>#</strong>" after any Domain/TLD to add comments. &emsp;<br />
-				IE: (example.com # Exclude example.com)<br />
-				IE: (co.uk # Exclude CO.UK)<br />
-				This List is stored as \'Base64\' format in the config.xml file.<br /><br />
+				You may use "<strong>#</strong>" after any domain or TLD to add comments.<br />
+				For example: <code>example.com # Exclude example.com</code><br />
+				For example: <code>co.uk # Exclude CO.UK</code><br />
 			</div>';
 
 $section->addInput(new Form_Textarea(
-	'tldexclusion',
+	'tld_wildcard_exclusion',
 	'TLD Exclusion List',
-	$pconfig['tldexclusion']
+	$pconfig['tld_wildcard_exclusion']
 ))->removeClass('form-control')
   ->addClass('row-fluid col-sm-12')
   ->setAttribute('columns', '90')
   ->setAttribute('rows', '15')
   ->setAttribute('wrap', 'off')
-  ->setAttribute('style', 'background:#fafafa; width: 100%')
+  ->setAttribute('style', 'width: 100%')
   ->setHelp($tld_exclusion_text);
 
 $form->add($section);
 
-$section = new Form_Section('TLD Blacklist/Whitelist', 'TLD_BW_list', COLLAPSIBLE|SEC_CLOSED);
+$section = new Form_Section('TLD Blacklist', 'TLD_BW_list', COLLAPSIBLE|SEC_CLOSED);
 
 $section->addInput(new Form_StaticText(
-	'Note:',
-	'The TLD Blacklist is used to block a whole TLD (IE: pw).<br /><br />'
-	. '<span class="text-danger">Note:</span><br />'
-	. 'DO NOT add domains to the TLD Whitelist, Instead, add them to any DNSBL Group Customlist or to a Source URL (Feed) that you manage.<br /><br />'
-	. 'The TLD Whitelist is used to allow access to the specific domain/sub-domains that is blocked by a TLD Blacklist; while blocking all others.<br />'
-	. 'TLD Blacklist/Whitelist: A <strong>static</strong> zone entry is used in the DNS Resolver for this feature, therefore no Alerts will be generated.<br />'
-	. '<br />When the \'python Blocking mode\' feature is enabled. The TLD Whitelist is not utilized and instead uses the DNSBL Whitelist.'
+	'Alerts',
+	'Blocks every name under each listed TLD, for example <code>pw</code>. Responses and logging follow <strong>Global Logging/Blocking Mode</strong>. Requires <strong>Wildcard Blocking</strong>.'
 ));
 
-$tld_blacklist_text = 'Enter TLD(s) to be blacklisted.&emsp;
+$tld_blacklist_text = 'Enter TLDs to block.
 			<div class="infoblock">
-				Enter one &emsp; <strong>TLD</strong>&emsp; per line. ie: xyz<br />
+				Enter one <strong>TLD</strong> per line, for example <code>xyz</code>.<br />
 				No Regex Entries and no leading/trailing \'dot\' allowed!<br />
-				You may use "<strong>#</strong>" after any TLD to add comments. example (xyz # Blacklist XYZ TLD)<br />
-				This List is stored as \'Base64\' format in the config.xml file.<br /><br />
+				You may use "<strong>#</strong>" after any TLD to add comments, for example <code>xyz # Blacklist XYZ TLD</code>.<br />
 			</div>';
 
 $section->addInput(new Form_Textarea(
-	'tldblacklist',
+	'tld_wildcard_blacklist',
 	'TLD Blacklist',
-	$pconfig['tldblacklist']
+	$pconfig['tld_wildcard_blacklist']
 ))->removeClass('form-control')
   ->addClass('row-fluid col-sm-12')
   ->setAttribute('columns', '90')
   ->setAttribute('rows', '15')
   ->setAttribute('wrap', 'off')
-  ->setAttribute('style', 'background:#fafafa; width: 100%')
+  ->setAttribute('style', 'width: 100%')
   ->setHelp($tld_blacklist_text);
-
-$tld_whitelist_text = 'Enter <strong>each specific</strong> Domain and/or Sub-Domains to be Whitelisted.
-			(Used in conjunction with <strong>TLD Blacklist only</strong>)&emsp;
-			<div class="infoblock">
-				Enter one &emsp;<strong>Domain</strong>&emsp;per line<br />Examples:<br />
-				<ul>
-					<li>example.com</li>
-					<li>example.com|x.x.x.x&emsp;&emsp;(Replace x.x.x.x with associated Domain/Sub-Domain IP Address.</li>
-				</ul>
-				The First option above will collect the IP Address on each Cron run,
-				while the second option will define a Static IP Address.<br /><br />
-
-				You must Whitelist every Domain or Sub-Domain individually.<br />
-				No Regex Entries and no leading/trailing \'dot\' allowed!<br />
-				You may use "<strong>#</strong>" after any Domain/Sub-Domain to add comments. IE: (example.com|x.x.x.x # TLD Whitelist)<br />
-				This List is stored as \'Base64\' format in the config.xml file.<br /><br />
-			</div>';
-
-if ($pfb['dnsbl_py_blacklist']) {
-	$tld_whitelist_text = "<span class=\"text-danger\">TLD Whitelist is not utilized for Unbound python mode! Use DNSBL Whitelist instead.</span><br /><br />{$tld_whitelist_text}";
-}
-
-$section->addInput(new Form_Textarea(
-	'tldwhitelist',
-	'TLD Whitelist',
-	$pconfig['tldwhitelist']
-))->removeClass('form-control')
-  ->addClass('row-fluid col-sm-12')
-  ->setAttribute('columns', '90')
-  ->setAttribute('rows', '15')
-  ->setAttribute('wrap', 'off')
-  ->setAttribute('style', 'background:#fafafa; width: 100%')
-  ->setHelp($tld_whitelist_text);
 
 $form->add($section);
 
-$section = new Form_Section('DNSBL IPs');
+$section = new Form_Section('DNSBL IPs', 'dnsbl_ips', COLLAPSIBLE|SEC_CLOSED);
 $section->addInput(new Form_StaticText(
 	NULL,
-	'When IPs are found in any Domain based Feed, these IPs will be added to the <strong>pfB_DNSBL_IP</strong> IP Aliastable and<br />'
+	'When literal IP addresses are found in any Domain based Feed, those IPs are added to the <code>pfB_DNSBLIP_v4</code> / <code>pfB_DNSBLIP_v6</code> IP alias tables and<br />'
 	. ' a firewall rule will be added to block those IPs.<br /><br />'
-	. '<span class="text-danger">Note: </span>To utilize this feature, select the appropriate List Action and define the Inbound/Outbound Interfaces in the <strong>IP Tab</strong>.'
+	. 'IPv6 entries appear only when a Feed lists literal IPv6 addresses (uncommon); an empty <code>pfB_DNSBLIP_v6</code> does not mean the blocked Domains have no IPv6 &#8212; the Domain itself is sinkholed at the DNS layer for both A and AAAA queries.<br /><br />'
+	. '<strong>Note:</strong> To utilize this feature, select the appropriate <strong>List Action</strong> and define the Inbound/Outbound Interfaces in the <strong>IP</strong> tab.'
+	. '<br /><br />The <strong>Suppression CIDR Limit</strong> on the <strong>IP</strong> tab, when set and Suppression is enabled, reduces a Feed IP range broader than the limit (for example 1.2.3.0/1) to a single address.'
+	. '<br /><br />In a High Availability pair where pfSense synchronizes Firewall rules and the <strong>Sync</strong> tab\'s <strong>Lists and global settings only (legacy)</strong> scope is selected, configure DNSBL IP identically on both nodes (see the <strong>Sync</strong> tab).'
 ));
 
 $list_action_text = 'Default: <strong>Disabled</strong>
 			<div class="infoblock">
-				Select the <strong>Action</strong> for Firewall Rules when any DNSBL Feed contain IP addresses.<br /><br />
-				<strong><u>\'Disabled\' Rule:</u></strong> Disables selection and does nothing to selected Alias.<br /><br />
-
-				<strong><u>\'Deny\' Rules:</u></strong><br />
-				\'Deny\' rules create high priority \'block\' or \'reject\' rules on the stated interfaces.
-				 They don\'t change the \'pass\' rules on other interfaces. Typical uses of \'Deny\' rules are:<br />
-
-				<ul>
-				<li><strong>Deny Both</strong> - blocks all traffic in both directions, if the source or destination IP is in the block list</li>
-				<li><strong>Deny Inbound/Deny Outbound</strong> - blocks all traffic in one direction <u>unless</u> it is part of a session started by
-				traffic sent in the other direction. Does not affect traffic in the other direction.</li>
-				<li>One way \'Deny\' rules can be used to selectively block <u>unsolicited</u> incoming (new session) packets in one direction, while
-				still allowing <u>deliberate</u> outgoing sessions to be created in the other direction.</li>
-				</ul>
-
-				<strong><u>\'Alias Deny\' Rule:</u></strong><br />
-				<strong>\'Alias Deny\'</strong> rules create an <a href="/firewall_aliases.php">alias</a> for the list (and do nothing else).
-				This enables a pfBlockerNG list to be used by name, in any firewall rule or pfSense function, as desired.
+				Select the <strong>Action</strong> for firewall rules when any DNSBL feed contains IP addresses.
+				<dl>
+				<dt><strong>Disabled</strong></dt><dd>This list is not used.</dd>
+				<dt>Automatic rules</dt><dd><strong>Deny Both</strong> blocks traffic in both directions when the source or destination address is listed. <strong>Deny Inbound</strong> and <strong>Deny Outbound</strong> block traffic in one direction, unless it belongs to a session started in the other direction. These are high-priority block or reject rules on the selected interfaces.</dd>
+				<dt>Aliases only</dt><dd><strong>Alias Deny</strong> adds the addresses to an <a href="/firewall_aliases.php">alias</a>, which can use De-Duplication and Reputation. <strong>Alias Native</strong> keeps them in their native format; De-Duplication and Reputation are bypassed. No firewall rule is created.</dd>
+				</dl>
 			</div>';
 
 $section->addInput(new Form_Select(
@@ -2951,7 +3617,8 @@ $section->addInput(new Form_Select(
 	$pconfig['aliaslog'],
 	$options_aliaslog
 ))->sethelp('Default: <strong>Enable</strong><br />Select - Logging to Status: System Logs: FIREWALL ( Log )<br />'
-		. 'This can be overriden by the \'Global Logging\' Option in the General Tab.'
+		. 'This can be overridden by the <strong>Force Global IP Logging</strong> option on the <strong>IP</strong> tab. '
+		. 'Applies when <strong>List Action</strong> is not <strong>Disabled</strong>.'
 );
 $form->add($section);
 
@@ -2961,19 +3628,19 @@ foreach (array( 'In' => 'Source', 'Out' => 'Destination') as $adv_mode => $adv_t
 
 	$section = new Form_Section("DNSBL IPs - Advanced {$adv_mode}bound Firewall Rule Settings", "adv{$advmode}boundsettings", COLLAPSIBLE|SEC_CLOSED);
 	$section->addInput(new Form_StaticText(
-		"dnsbl_ip_text_{$adv_type}",
-		"<span class=\"text-danger\">Note:</span>&nbsp; In general, Auto-Rules are created as follows:<br />
+		null,
+		"<strong>Note:</strong>&nbsp; In general, Auto-Rules are created as follows:<br />
 			<dl class=\"dl-horizontal\">
 				<dt>{$adv_mode}bound</dt><dd>'any' port, 'any' protocol, 'any' destination and 'any' gateway</dd>
 			</dl>
-			Configuring the Adv. {$adv_mode}bound Rule settings, will allow for more customization of the {$adv_mode}bound Auto-Rules.")
+			Configuring the <strong>Advanced {$adv_mode}bound Firewall Rule Settings</strong> will allow for more customization of the {$adv_mode}bound Auto-Rules.")
 		)->addClass('dnsbl_ip');
 
 	$section->addInput(new Form_Checkbox(
 		'autoaddrnot_' . $advmode,
 		"Invert {$adv_type}",
 		NULL,
-		$pconfig['autoaddrnot_' . $advmode] === 'on' ? true:false,
+		pfb_cfg_toggle_read($pconfig['autoaddrnot_' . $advmode] ?? NULL) === PfbToggle::On,
 		'on'
 	))->setHelp("Option to invert the sense of the match. ie - Not (!) {$adv_type} Address(es)")
 	  ->addClass('dnsbl_ip');
@@ -2983,7 +3650,7 @@ foreach (array( 'In' => 'Source', 'Out' => 'Destination') as $adv_mode => $adv_t
 		'autoports_' . $advmode,
 		'Custom DST Port',
 		NULL,
-		$pconfig['autoports_' . $advmode] === 'on' ? true:false,
+		pfb_cfg_toggle_read($pconfig['autoports_' . $advmode] ?? NULL) === PfbToggle::On,
 		'on'
 	))->setHelp('Enable')
 	  ->setWidth(2)
@@ -2994,8 +3661,8 @@ foreach (array( 'In' => 'Source', 'Out' => 'Destination') as $adv_mode => $adv_t
 		'Custom Port',
 		'text',
 		$pconfig["aliasports_{$advmode}"]
-	))->setHelp("<a target=\"_blank\" href=\"/firewall_aliases.php?tab=port\">Click Here to add/edit Aliases</a>
-			Do not manually enter port numbers.<br />Do not use 'pfB_' in the Port Alias name."
+	))->setHelp("<a target=\"_blank\" rel=\"noopener noreferrer\" href=\"/firewall_aliases.php?tab=port\">Click Here to add/edit Aliases</a><br />
+		Do not manually enter port numbers.<br />Do not use <code>pfB_</code> in the Port Alias name."
 	)->setWidth(8)
 	 ->addClass('dnsbl_ip');
 	$section->add($group);
@@ -3011,7 +3678,7 @@ foreach (array( 'In' => 'Source', 'Out' => 'Destination') as $adv_mode => $adv_t
 		'autoaddr_' . $advmode,
 		"Custom {$custom_location}",
 		NULL,
-		$pconfig["autoaddr_{$advmode}"] === 'on' ? true:false,
+		pfb_cfg_toggle_read($pconfig["autoaddr_{$advmode}"] ?? NULL) === PfbToggle::On,
 		'on'
 	))->setHelp('Enable')->setWidth(1)
 	  ->addClass('dnsbl_ip');
@@ -3020,7 +3687,7 @@ foreach (array( 'In' => 'Source', 'Out' => 'Destination') as $adv_mode => $adv_t
 		'autonot_' . $advmode,
 		NULL,
 		NULL,
-		$pconfig["autonot_{$advmode}"] === 'on' ? true:false,
+		pfb_cfg_toggle_read($pconfig["autonot_{$advmode}"] ?? NULL) === PfbToggle::On,
 		'on'
 	))->setHelp('Invert')->setWidth(1)
 	  ->addClass('dnsbl_ip');
@@ -3030,8 +3697,8 @@ foreach (array( 'In' => 'Source', 'Out' => 'Destination') as $adv_mode => $adv_t
 		"Custom {$custom_location}",
 		'text',
 		$pconfig['aliasaddr_' . $advmode]
-	))->sethelp('<a target="_blank" href="/firewall_aliases.php?tab=ip">Click Here to add/edit Aliases</a>'
-		. 'Do not manually enter Addresses(es).<br />Do not use \'pfB_\' in the \'IP Network Type\' Alias name.<br />'
+	))->sethelp('<a target="_blank" rel="noopener noreferrer" href="/firewall_aliases.php?tab=ip">Click Here to add/edit Aliases</a><br />'
+		. 'Do not manually enter Addresses(es).<br />Do not use <code>pfB_</code> in the address-type (Host/Network/URL/URL Table) Alias name.<br />'
 		. "Select 'invert' to invert the sense of the match. ie - Not (!) {$custom_location} Address(es)"
 	)->setWidth(8)
 	 ->addClass('dnsbl_ip');
@@ -3043,8 +3710,8 @@ foreach (array( 'In' => 'Source', 'Out' => 'Destination') as $adv_mode => $adv_t
 		NULL,
 		$pconfig['autoproto_' . $advmode],
 		$options_autoproto_in
-	))->setHelp("<strong>Default: any</strong><br />Select the Protocol used for {$adv_mode}bound Firewall Rule(s).<br />
-		<span class=\"text-danger\">Note:</span>&nbsp;Do not use 'Any' with Adv. {$adv_mode}bound Rules as it will bypass these settings!")
+	))->setHelp("<strong>Default: any</strong><br />Choose <strong>Custom Protocol</strong> for the {$adv_mode}bound Firewall Rule(s).<br />
+		<span class=\"text-danger\"><strong>Warning:</strong></span>&nbsp;Do not use 'Any' with the <strong>Advanced {$adv_mode}bound Firewall Rule Settings</strong> as it will bypass these settings!")
 	  ->addClass('dnsbl_ip');
 	$section->add($group);
 
@@ -3054,7 +3721,7 @@ foreach (array( 'In' => 'Source', 'Out' => 'Destination') as $adv_mode => $adv_t
 		NULL,
 		$pconfig['agateway_' . $advmode],
 		$options_agateway_in
-	))->setHelp("Select alternate Gateway or keep 'default' setting.")
+	))->setHelp("Choose <strong>Custom Gateway</strong> or keep 'default' setting.")
 	  ->addClass('dnsbl_ip');
 
 	$section->add($group);
@@ -3062,14 +3729,14 @@ foreach (array( 'In' => 'Source', 'Out' => 'Destination') as $adv_mode => $adv_t
 }
 
 print ($form);
-print_callout('<strong>Setting changes are applied via CRON or \'Force Update|Reload\' only!</strong>');
+print_callout('<p>Saved changes are applied automatically at a schedule check, normally within 15 minutes while pfBlockerNG is enabled. If an <strong>Automatic Apply Window</strong> is set on <strong>General</strong>, changes wait for that window. To apply them now, open <strong>Update</strong>. Set <strong>Run Scope</strong> to <strong>DNSBL</strong> or <strong>Both</strong>, then use <strong>Run Now</strong>.</p>');
 
 ?>
+<?=$pfb_dnsbl_editor['asset']?>
 <script type="text/javascript">
 //<![CDATA[
 
 var pagetype = 'advanced';
-var disable_move = "<?=$disable_move?>";
 
 // Auto-Complete for Adv. In/Out Address Select boxes
 var plist = "<?=$ports_list?>";
@@ -3080,95 +3747,141 @@ var networksarray = nlist.split(',');
 // Disable GeoIP/ASN Autocomplete as not required for the DNSBL page
 var geoiparray = 'disabled';
 
+// [ ADR-36/37 ] Address-type firewall alias names for the Exception Alias autocomplete.
+var pfb_alias_names = <?=$pfb_alias_names_json?>;
+
+// Wire jQuery-UI autocomplete onto the DNS Redirect + DoT/DoQ Block exception fields so a
+// valid alias name can be picked rather than typed (a typo there used to save and then emit
+// an unresolvable "from !" rule that broke the whole ruleset). minLength 0 + the focus search
+// shows the full alias list on focus.
+function pfb_redir_exclude_autocomplete() {
+	$('#dnsbl_redir_exclude, #dnsbl_dot_block_exclude')
+		.autocomplete({ minLength: 0, source: pfb_alias_names })
+		.on('focus', function() { $(this).autocomplete('search', $(this).val()); });
+}
+
+// [ ADR-36/37 ] Quick-fill: union of pfBlockerNG Inbound + Outbound interfaces, shared by the
+// DNS Redirect and DoT/DoQ Block sections (same underlying interface list -- ADR-37 aliases
+// the ADR-36 set here rather than recomputing it server-side).
+var pfb_redir_fill_ifaces = <?=$pfb_redir_fill_json?>;
+var pfb_dot_block_fill_ifaces = pfb_redir_fill_ifaces;
+
+function pfb_fill_interfaces(selectName, fillSet) {
+	// Set the multi-select to exactly the fill set (deselects the rest). .val([...]) is the
+	// reliable jQuery idiom for a <select multiple>; trigger('change') notifies any listeners.
+	// NOTE: a pfSense multi-select renders id (and name) as "<field>[]", so the bracket-free
+	// id selector "#<field>" matches nothing — target it by name instead (this is why the
+	// button previously appeared to do nothing).
+	$('select[name="' + selectName + '[]"]').val(fillSet).trigger('change');
+}
+
+// [ ADR-13 ] Address(es) the package would auto-create for the selected interface, so
+// the "Create VIPs automatically" checkbox can pre-fill the (display-only) VIP fields.
+// Empty string => no candidate / family not required.
+var pfb_auto_vip4 = "<?=htmlspecialchars($pfb_auto_vip4 ?? '', ENT_QUOTES)?>";
+var pfb_auto_vip6 = "<?=htmlspecialchars($pfb_auto_vip6 ?? '', ENT_QUOTES)?>";
+
+// [ ADR-13 ] On check: pre-fill the VIP dropdown(s) with the address pfBlockerNG would
+// create (a synthetic, selected option for display) and disable the manual dropdowns; on
+// uncheck: remove the synthetic option, restore the prior manual selection, and re-enable.
+function enable_dnsvip_auto() {
+	var on = $('#pfb_dnsvip_auto').prop('checked');
+	var fields = [['pfb_dnsvip4', pfb_auto_vip4], ['pfb_dnsvip6', pfb_auto_vip6]];
+	$.each(fields, function(i, f) {
+		var id = f[0], addr = f[1];
+		var $sel = $('#' + id);
+		if (on) {
+			// Remember the manual selection once, then show the auto address.
+			if (typeof $sel.data('pfbManualVal') === 'undefined') {
+				$sel.data('pfbManualVal', $sel.val());
+			}
+			$sel.find('option.pfb-auto-opt').remove();
+			if (addr !== '') {
+				$sel.append($('<option>', { 'class': 'pfb-auto-opt', value: '_pfb_auto', text: addr }));
+				$sel.val('_pfb_auto');
+			}
+			disableInput(id, true);
+		} else {
+			disableInput(id, false);
+			$sel.find('option.pfb-auto-opt').remove();
+			if (typeof $sel.data('pfbManualVal') !== 'undefined') {
+				$sel.val($sel.data('pfbManualVal'));
+				$sel.removeData('pfbManualVal');
+			}
+		}
+	});
+}
+
 function enable_tld() {
-	if ($('#pfb_tld').prop('checked')) {
+	if ($('#tld_wildcard').prop('checked')) {
 		$('#TLD_Exclusion').show();
 		$('#TLD_BW_list').show();
+		disableInput('pfb_psl_include_private', false);
 	} else {
 		$('#TLD_Exclusion').hide();
 		$('#TLD_BW_list').hide();
+		disableInput('pfb_psl_include_private', true);
 	}
 }
 
 function enable_ports() {
 	if ($('#dnsbl_interface').val() == 'lo0') {
-		hideInput('pfb_dnsport', true);
-		hideInput('pfb_dnsport_ssl', true);
+		disableInput('pfb_dnsport', true);
+		disableInput('pfb_dnsport_ssl', true);
 	} else {
-		hideInput('pfb_dnsport', false);
-		hideInput('pfb_dnsport_ssl', false);
+		disableInput('pfb_dnsport', false);
+		disableInput('pfb_dnsport_ssl', false);
 	}
 }
 
-function enable_python() {
-
-	var python = true;
-	if ($('#dnsbl_mode').val() == 'dnsbl_unbound') {
-		var python = false;
-	};
-
-	if (python && $('#pfb_py_block').prop('checked')) {
-		hideCheckbox('pfb_dnsbl_sync', true);
+function enable_tld_allow() {
+	if ($('#tld_allow').prop('checked')) {
+		$('#tld_allow_pickers').show();
+		disableInput('pfb_psl_allow_private', false);
 	} else {
-		hideCheckbox('pfb_dnsbl_sync', false);
-	}
-
-	hideCheckbox('pfb_control', !python);
-	hideCheckbox('pfb_py_reply', !python);
-	hideCheckbox('pfb_py_block', !python);
-	hideCheckbox('pfb_hsts', !python);
-	hideCheckbox('pfb_idn', !python);
-	hideCheckbox('pfb_regex', !python);
-	hideCheckbox('pfb_noaaaa', !python);
-	hideCheckbox('pfb_cname', !python);
-	hideCheckbox('pfb_gp', !python);
-	hideInput('pfb_regex_list', !python);
-	hideInput('pfb_noaaaa_list', !python);
-	hideInput('pfb_gp_bypass_list', !python);
-	hideCheckbox('pfb_pytld', !python);
-	hideCheckbox('pfb_pytld_sort', !python);
-	hideMultiClass('pfb_python', !python);
-	hideCheckbox('pfb_py_nolog', !python);
-
-	if (!python) {
-		$('.dnsbl_unbound_tld').show();
-		$('#tldwhitelist').attr('readonly', false).css('background-color', '#FAFAFA');
-	} else {
-		$('.dnsbl_unbound_tld').hide();
-		$('#tldwhitelist').attr('readonly', true).css('background-color', '#DEDEDE');
-	}
-
-	if ($('#dnsbl_mode').val() == 'dnsbl_python' && $('#pfb_py_block').prop('checked') == false) {
-		$('.dnsbl_unbound_tld').show();
+		$('#tld_allow_pickers').hide();
+		disableInput('pfb_psl_allow_private', true);
 	}
 }
 
-function enable_python_pytld() {
-	if ($('#dnsbl_mode').val() == 'dnsbl_python') {
-		if ($('#pfb_pytld').prop('checked')) {
-			hideCheckbox('pfb_pytld_sort', false);
-			hideMultiClass('pfb_python', false);
-			$('#dnsbl_python_tld_allow_text').show();
-		} else {
-			hideCheckbox('pfb_pytld_sort', true);
-			hideMultiClass('pfb_python', true);
-			$('#dnsbl_python_tld_allow_text').hide();
-		}
+function enable_idn_mode() {
+	// ADR-08: the two Confusable sub-toggles apply only in Confusable mode.
+	if ($('#pfb_idn').val() == 'confusable') {
+		hideCheckbox('pfb_idn_block_malicious', false);
+		hideCheckbox('pfb_idn_escalate_suspicious', false);
 	} else {
-		hideMultiClass('pfb_python', true);
+		hideCheckbox('pfb_idn_block_malicious', true);
+		hideCheckbox('pfb_idn_escalate_suspicious', true);
 	}
+}
+
+// ADR-59: providers whose 'auth' needs a token, derived server-side from the
+// descriptor table (pfb_top1m_providers()) -- a future token provider needs no JS edit.
+var pfb_top1m_token_providers = <?=$pfb_top1m_token_providers_json?>;
+
+function enable_top1m_token() {
+	var pfb_top1m_no_token = pfb_top1m_token_providers.indexOf($('#top1m_source').val()) === -1;
+	// ADR-59: the field renders blank on every GET, so a value here was typed this
+	// load. A hidden input is still submitted and the save path writes any non-empty
+	// top1m_token, so it must be cleared before hiding.
+	if (pfb_top1m_no_token) {
+		$('#top1m_token').val('');
+	}
+	hideInput('top1m_token', pfb_top1m_no_token);
 }
 
 function enable_python_regex() {
-	if ($('#dnsbl_mode').val() == 'dnsbl_python' && $('#pfb_regex').prop('checked')) {
+	if ($('#pfb_regex').prop('checked')) {
 		$('#Python_regex_list').show();
+		hideCheckbox('pfb_regex_cap', false);
 	} else {
 		$('#Python_regex_list').hide();
+		hideCheckbox('pfb_regex_cap', true);
 	}
 }
 
 function enable_python_noaaaa() {
-	if ($('#dnsbl_mode').val() == 'dnsbl_python' && $('#pfb_noaaaa').prop('checked')) {
+	if ($('#pfb_noaaaa').prop('checked')) {
 		$('#Python_noaaaa_list').show();
 	} else {
 		$('#Python_noaaaa_list').hide();
@@ -3176,7 +3889,7 @@ function enable_python_noaaaa() {
 }
 
 function enable_python_gp() {
-	if ($('#dnsbl_mode').val() == 'dnsbl_python' && $('#pfb_gp').prop('checked')) {
+	if ($('#pfb_gp').prop('checked')) {
 		$('#Python_Group_Policy').show();
 	} else {
 		$('#Python_Group_Policy').hide();
@@ -3185,18 +3898,21 @@ function enable_python_gp() {
 
 function enable_dnsblip() {
 	if ($('#action').val() != 'Disabled') {
-		hideInput('aliaslog', false);
+		disableInput('aliaslog', false);
 		$('#advinboundsettings').show();
 		$('#advoutboundsettings').show();
 	} else {
-		hideInput('aliaslog', true);
+		disableInput('aliaslog', true);
 		$('#advinboundsettings').hide();
 		$('#advoutboundsettings').hide();
 	}
 }
 
 events.push(function(){
-	$('#pfb_tld').click(function() {
+<?=$pfb_dnsbl_editor['regex']?>
+<?=$pfb_dnsbl_editor['lists']?>
+
+	$('#tld_wildcard').click(function() {
 		enable_tld();
 	});
 	enable_tld();
@@ -3206,26 +3922,22 @@ events.push(function(){
 	});
 	enable_ports();
 
-	$('#dnsbl_mode').click(function() {
-		enable_python();
-		enable_python_pytld();
-		enable_python_regex();
-		enable_python_noaaaa();
-		enable_python_gp();
+	$('#tld_allow').click(function() {
+		enable_tld_allow();
 	});
-	enable_python();
+	enable_tld_allow();
 
-	$('#pfb_py_block').click(function() {
-		enable_python();
-		enable_python_pytld();
+	$('#pfb_idn').change(function() {
+		enable_idn_mode();
 	});
+	enable_idn_mode();
 
-	$('#pfb_pytld').click(function() {
-		enable_python_pytld();
+	$('#top1m_source').change(function() {
+		enable_top1m_token();
 	});
-	enable_python_pytld();
+	enable_top1m_token();
 
-	$('#pfb_regex').click(function() {
+	$('#pfb_regex').on('click change', function() {
 		enable_python_regex();
 	});
 	enable_python_regex();
@@ -3245,15 +3957,50 @@ events.push(function(){
 	});
 	enable_dnsblip();
 
-	$('label[class="col-sm-2 control-label"]').each(function() {
-		var found = $(this).text();
-		if (found.indexOf('(py)') >= 0) {
-			$(this).html(found.replace('(py)', '&emsp;<i class="fa-solid fa-bolt" title="DNSBL Python"></i>'));
-		}
+	var pfb_gated_ids = [
+		'pfb_psl_include_private', 'pfb_dnsport', 'pfb_dnsport_ssl',
+		'pfb_psl_allow_private', 'aliaslog'
+	];
+	$('form').submit(function() {
+		$.each(pfb_gated_ids, function(_, id) {
+			disableInput(id, false);
+		});
 	});
+
+	$('#pfb_dnsvip_auto').click(function() {
+		enable_dnsvip_auto();
+	});
+	enable_dnsvip_auto();
+
+	(function() {
+		var $title = $('#pfb_dnsbl').closest('.panel').children('.panel-heading').find('.panel-title').first();
+		if (!$title.length) {
+			return;
+		}
+		var $btn = $('<button type="button" id="pfb_expand_all" class="btn btn-xs btn-default pull-right">Expand all</button>');
+		$title.append($btn);
+		function collapses() {
+			return $('form .panel-body.collapse');
+		}
+		function anyClosed() {
+			return collapses().filter(':not(.in)').length > 0;
+		}
+		function syncLabel() {
+			$btn.text(anyClosed() ? 'Expand all' : 'Collapse all');
+		}
+		$btn.on('click', function(e) {
+			e.preventDefault();
+			collapses().collapse(anyClosed() ? 'show' : 'hide');
+			syncLabel();
+		});
+		$('form').on('shown.bs.collapse hidden.bs.collapse', syncLabel);
+		syncLabel();
+	})();
+
+	pfb_redir_exclude_autocomplete();
 });
 
 //]]>
 </script>
-<script src="pfBlockerNG.js" type="text/javascript"></script>
+<?=pfb_dnsbl_js_asset_render()?>
 <?php include('foot.inc');?>

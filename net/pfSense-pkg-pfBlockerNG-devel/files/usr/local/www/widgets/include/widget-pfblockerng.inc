@@ -21,7 +21,23 @@
  */
 
 //set variables for custom title and link
-$pfblockerng_title = '<span title="Click to open Unified Log tab">pfBlockerNG</span>';
+$pfblockerng_title = '<span title="Open &quot;Reports&quot; &gt; &quot;Unified&quot;">pfBlockerNG</span>';
 $pfblockerng_title_link = 'pfblockerng/pfblockerng_alerts.php?view=unified';
+// issue #1777: pfSense dashboard widget-include convention (same family as
+// $widgetname/$pfblockerng_title above); the widget is a singleton (fixed POST
+// action URL, settings keyed off one installedpackages/pfblockerngglobal block).
+$pfblockerng_allow_multiple_widget_copies = FALSE;
+
+// issue #1050: the widget sets $nocsrf=TRUE (csrf-magic never runs here), so a
+// mutating POST handler gates on this instead. DEFAULT-DENY on an absent header
+// (issue #1650): a header-less/legacy client would otherwise bypass the guard
+// entirely; every modern browser sends Sec-Fetch-Site, so the legitimate
+// same-origin widget POST still passes.
+function pfb_widget_post_allowed(array $server): bool {
+	if (!isset($server['HTTP_SEC_FETCH_SITE'])) {
+		return FALSE;
+	}
+	return in_array($server['HTTP_SEC_FETCH_SITE'], array('same-origin', 'none'), TRUE);
+}
 
 ?>

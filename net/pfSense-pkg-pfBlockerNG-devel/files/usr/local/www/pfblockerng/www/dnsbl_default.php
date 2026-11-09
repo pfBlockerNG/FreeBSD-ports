@@ -25,6 +25,13 @@
 	<meta http-equiv="content-Type" content="text/html; charset=UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 
+	<?php
+	// issue #1497: includer-provided (www/index.php always defines both before
+	// include()ing this template -- $ptype at $ptype['type'] = ...; $ts inside
+	// its dnsbl.log search loop, defaulted for the no-log-yet case).
+	/** @var array<string,string> $ptype */
+	/** @var string $ts */
+	?>
 	<?php if ($ptype['type'] == '-'): ?>
 	<meta http-equiv="refresh" content="1">
 	<?php endif; ?>
@@ -128,7 +135,7 @@
 				<caption>This website <span style="color: #FF0000; font-weight: bold;"><?=$ptype['HTTP_HOST']?></span> has been blocked by the Network Administrator!</caption>
 
 				<?php if ($ts == 'M d'): ?>
-				<div>The Evaluated Domain is uncertain, refer to the DNSBL Reports tab for more details</div>
+				<div>The evaluated domain is uncertain. Network administrators can see more details under <strong>Reports</strong> &gt; <strong>Alerts</strong>.</div>
 				<?php endif; ?>
 
 				<thead>
@@ -153,7 +160,7 @@
 				</tbody>
 			</table>
 			<div>Powered by: <strong>pfBlockerNG DNSBL</strong>&emsp;
-				<a target="_blank" href="http://pfblockerng.com">pfBlockerNG.com</a>
+				<a target="_blank" rel="noopener noreferrer" href="https://pfblockerng.com">pfBlockerNG.com</a>
 			</div>
 		</div>
 	</div>

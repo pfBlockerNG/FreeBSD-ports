@@ -2177,7 +2177,7 @@ function dnsbl_whitelist_type($fields, $clists, $isExclusion, $isTLD, $qdomain) 
 		$s_txt  = "Note:&emsp;The following Domain was blocked via 'DNSBL TLD' (TLD Blacklist):\n\n"
 			. "Blocked Domain:&emsp;&emsp;[ {$fields[2]} ]\n"
 			. "Evaluated Domain:&emsp;&nbsp;[ {$fields[7]} ]\n\n"
-			. "Add [ {$fields[2]} ] to the TLD Whitelist?";
+			. "Add [ {$fields[2]} ] to the [ DNSBL Whitelist ]?";
 
 		$supp_dom = '<i class="fa-regular fa-hand icon-pointer" id="DNSBLWT|' . 'tld|'
 			. $fields[2] . '|' . $fields[7] . '" title="' . $s_txt . '"></i>';
@@ -3210,6 +3210,7 @@ $tab_array[] = array(gettext('Reports'),	true,	"/pfblockerng/pfblockerng_alerts.
 $tab_array[] = array(gettext('Feeds'),		false,	'/pfblockerng/pfblockerng_feeds.php');
 $tab_array[] = array(gettext('Logs'),		false,	'/pfblockerng/pfblockerng_log.php');
 $tab_array[] = array(gettext('Sync'),		false,	'/pfblockerng/pfblockerng_sync.php');
+if (function_exists('pfb_software_add_tab')) { pfb_software_add_tab($tab_array); }
 display_top_tabs($tab_array, true);
 
 $tab_array   = array();
@@ -5385,6 +5386,7 @@ events.push(function() {
 				return;
 			}
 			var blocktype = '';		// Types (DNSBL/TLD/DNSBL TLD)
+			var button_text = '', descr_type = '';	// Local: never inherit the previous dialog's values
 
 			switch (DNSBLWT_Type) {
 				case 'add':
@@ -5407,6 +5409,7 @@ events.push(function() {
 				case 'tld':
 					$('#table').val(arr[3]);
 					var blocktype = arr[4];
+					button_text = 'Whitelist';
 					descr_type = 'dnsbl';
 					break;
 				case 'dnsbl_add':

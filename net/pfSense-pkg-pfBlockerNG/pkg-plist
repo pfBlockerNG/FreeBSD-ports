@@ -1,19 +1,7 @@
 /etc/inc/priv/pfblockerng.priv.inc
+etc/rc.d/pfblockerng_repo_generate.sh
 pkg/pfblockerng.xml
 pkg/pfblockerng/dnsbl_tld
-pkg/pfblockerng/pfb_dnsbl.doh.conf
-pkg/pfblockerng/pfb_dnsbl.safesearch.conf
-pkg/pfblockerng/pfb_dnsbl.youtube_restrict.conf
-pkg/pfblockerng/pfb_dnsbl.youtube_restrictmoderate.conf
-pkg/pfblockerng/pfblockerng.inc
-pkg/pfblockerng/pfblockerng.sh
-pkg/pfblockerng/pfblockerng_extra.inc
-pkg/pfblockerng/pfblockerng_install.inc
-pkg/pfblockerng/shallalist_global_usage
-pkg/pfblockerng/ut1_global_usage
-pkg/pfblockerng/pfb_unbound.py
-pkg/pfblockerng/pfb_unbound_include.inc
-pkg/pfblockerng/pfb_py_hsts.txt
 pkg/pfblockerng/ip_pre_AWS_AF.sh
 pkg/pfblockerng/ip_pre_AWS_ALL_REGIONS.sh
 pkg/pfblockerng/ip_pre_AWS_AP.sh
@@ -39,10 +27,24 @@ pkg/pfblockerng/ip_pre_AWS_US.sh
 pkg/pfblockerng/ip_pre_AWS_US_EAST.sh
 pkg/pfblockerng/ip_pre_AWS_US_GOV.sh
 pkg/pfblockerng/ip_pre_AWS_US_WEST.sh
+pkg/pfblockerng/pfb_dnsbl.doh.conf
+pkg/pfblockerng/pfb_dnsbl.safesearch.conf
+pkg/pfblockerng/pfb_dnsbl.youtube_restrict.conf
+pkg/pfblockerng/pfb_dnsbl.youtube_restrictmoderate.conf
+pkg/pfblockerng/pfb_py_hsts.txt
+pkg/pfblockerng/pfb_unbound.py
+pkg/pfblockerng/pfb_unbound_include.inc
+pkg/pfblockerng/pfblockerng.inc
+pkg/pfblockerng/pfblockerng.sh
+pkg/pfblockerng/pfblockerng_extra.inc
+pkg/pfblockerng/pfblockerng_install.inc
+pkg/pfblockerng/pfblockerng_software.inc
+pkg/pfblockerng/shallalist_global_usage
+pkg/pfblockerng/ut1_global_usage
 www/pfblockerng/pfBlockerNG.js
 www/pfblockerng/pfblockerng.php
-www/pfblockerng/pfblockerng_asn.txt
 www/pfblockerng/pfblockerng_alerts.php
+www/pfblockerng/pfblockerng_asn.txt
 www/pfblockerng/pfblockerng_blacklist.php
 www/pfblockerng/pfblockerng_category.php
 www/pfblockerng/pfblockerng_category_edit.php
@@ -53,6 +55,7 @@ www/pfblockerng/pfblockerng_general.php
 www/pfblockerng/pfblockerng_ip.php
 www/pfblockerng/pfblockerng_log.php
 www/pfblockerng/pfblockerng_safesearch.php
+www/pfblockerng/pfblockerng_software.php
 www/pfblockerng/pfblockerng_sync.php
 www/pfblockerng/pfblockerng_threats.php
 www/pfblockerng/pfblockerng_update.php
@@ -61,8 +64,8 @@ www/pfblockerng/www/index.php
 www/widgets/include/widget-pfblockerng.inc
 www/widgets/javascript/pfblockerng.js
 www/widgets/widgets/pfblockerng.widget.php
-www/wizards/pfblockerng_wizard.xml
 www/wizards/pfblockerng_wizard.inc
+www/wizards/pfblockerng_wizard.xml
 %%DATADIR%%/info.xml
 @dir /etc/inc/priv
 @dir /etc/inc

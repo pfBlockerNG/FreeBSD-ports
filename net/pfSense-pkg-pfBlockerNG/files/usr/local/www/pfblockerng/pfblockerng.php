@@ -159,8 +159,10 @@ if ($argv[1] == 'bl' || $argv[1] == 'bls') {
 					$pfb['extras'][$next_key]['password'] = $item['password'];
 				}
 
-				// Patch UT1 filename
-				if ($item['feed'] == 'ftp://ftp.ut-capitole.fr/pub/reseau/cache/squidguard_contrib/blacklists.tar.gz') {
+				// Patch UT1 filename. Keyed on the provider id, never its feed URL: the
+				// download name decides the category filenames, so a URL change would
+				// otherwise rename the whole category set.
+				if ($item['xml'] == 'ut1') {
 					$pfb['extras'][$next_key]['file_dwn'] = $pfb['extras'][$next_key]['file'] = 'ut1.tar.gz';
 				}
 				$next_key++;
@@ -180,6 +182,12 @@ if (in_array($argv[1], array('update', 'updateip', 'updatednsbl', 'dc', 'dcc', '
 		case 'cron':		// Sync 'cron'
 			logger(LOG_NOTICE, localize_text('Starting cron process.'), LOG_PREFIX_PKG_PFBLOCKERNG);
 			pfblockerng_sync_cron();
+			// ADR-19 (issue #2360): once-per-cron-tick software-update check. Best-effort +
+			// fully guarded (provenance gate, pkg-lock + DNS guards inside) — never affects
+			// cron timing/outcome. Provenance-gated: a no-op on a Netgate-installed build.
+			if (function_exists('pfb_software_update_check')) {
+				try { pfb_software_update_check(); } catch (Throwable $e) { /* best-effort */ }
+			}
 			break;
 		case 'updateip':	// Sync 'Force Reload IP only'
 		case 'updatednsbl':	// Sync 'Force Reload DNSBL only'
@@ -1757,6 +1765,7 @@ $tab_array[]	= array(gettext('Reports'),		false,	"/pfblockerng/pfblockerng_alert
 $tab_array[]	= array(gettext('Feeds'),		false,	'/pfblockerng/pfblockerng_feeds.php');
 $tab_array[]	= array(gettext('Logs'),		false,	'/pfblockerng/pfblockerng_log.php');
 $tab_array[]	= array(gettext('Sync'),		false,	'/pfblockerng/pfblockerng_sync.php');
+if (function_exists('pfb_software_add_tab')) { pfb_software_add_tab($tab_array); }
 display_top_tabs($tab_array, true);
 
 $tab_array	= array();
@@ -2298,6 +2307,7 @@ $tab_array[]	= array(gettext('Reports'),	false,	"/pfblockerng/pfblockerng_alerts
 $tab_array[]	= array(gettext('Feeds'),	false,	'/pfblockerng/pfblockerng_feeds.php');
 $tab_array[]	= array(gettext('Logs'),	false,	'/pfblockerng/pfblockerng_log.php');
 $tab_array[]	= array(gettext('Sync'),	false,	'/pfblockerng/pfblockerng_sync.php');
+if (function_exists('pfb_software_add_tab')) { pfb_software_add_tab($tab_array); }
 display_top_tabs($tab_array, true);
 
 $tab_array	= array();

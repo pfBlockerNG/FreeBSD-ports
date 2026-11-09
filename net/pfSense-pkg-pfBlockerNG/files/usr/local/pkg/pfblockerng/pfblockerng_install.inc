@@ -26,6 +26,8 @@ require_once('/usr/local/www/pfblockerng/pfblockerng.php');
 
 global $g, $pfb;
 pfb_global();
+$pfb_installed_family = pfb_install_settings_family_capture_restore();
+pfb_global();
 
 // Set 'Install flag' to skip sync process during installations.
 $g['pfblockerng_install'] = TRUE;
@@ -515,6 +517,11 @@ if (($pfb['dnsbl_mode'] == 'dnsbl_python') && is_dir(g_get('unbound_chroot_path'
 
 if ($ufound) {
 	$final = pfb_stop_start_unbound('');
+	// issue #3094 (backported for #3292): $final used to be assigned and never read, so
+	// an install could finish "successfully" with the resolver never restarted.
+	if (($final['retval'] ?? 0) != 0) {
+		update_status(" Unbound Resolver did not restart; see the pfBlockerNG log.\n");
+	}
 }
 
 // Upgrade EasyList to new Format
@@ -668,6 +675,7 @@ if ($ufound) {
 	update_status(" no changes required ... done.\n");
 }
 
+pfb_install_settings_family_finalize();
 unset($g['pfblockerng_install']);	// Remove 'Install flag'
 update_status("Upgrading... done\n\nCustom commands completed ... ");
 

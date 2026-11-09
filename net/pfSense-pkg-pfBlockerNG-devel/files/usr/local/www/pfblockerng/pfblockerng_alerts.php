@@ -36,45 +36,84 @@ $aglobal_array = array(	'pfbunicnt' => 200, 'pfbdenycnt' => 25, 'pfbpermitcnt' =
 			'pfbdnscnt' => 25, 'pfbdnsreplycnt' => 200,
 			'ipfilterlimitentries' => 100, 'dnsblfilterlimitentries' => 100, 'dnsfilterlimitentries' => 100); 
 
-$pfb['aglobal'] = config_get_path('installedpackages/pfblockerngglobal', []);
+$pfb['aglobal'] = PfbConfig::readSection('installedpackages/pfblockerngglobal');
 
-$alertrefresh	= isset($pfb['aglobal']['alertrefresh'])	? $pfb['aglobal']['alertrefresh']	: 'on';
+// issue #2123: the ON default and the stored vocabulary now live in the registry
+// (ADR-29) instead of this page. PfbConfig::read() applies the default only for a
+// genuinely absent key, so an operator's unchecked '' still reads Off.
+$alertrefresh	= PfbConfig::read('global/alertrefresh');
 $pfbpageload	= $pfb['aglobal']['pfbpageload']	!= ''	? $pfb['aglobal']['pfbpageload']	: 'unified';
 $pfbmaxtable	= $pfb['aglobal']['pfbmaxtable']	!= ''	? $pfb['aglobal']['pfbmaxtable']	: '1000';
-$pfbreplytypes	= explode(',', $pfb['aglobal']['pfbreplytypes'])?: array();
-$pfbreplyrec	= explode(',', $pfb['aglobal']['pfbreplyrec'])	?: array();
+$pfbreplytypes	= pfb_csv_list($pfb['aglobal']['pfbreplytypes'] ?? NULL);
+$pfbreplyrec	= pfb_csv_list($pfb['aglobal']['pfbreplyrec'] ?? NULL);
 
-// Unified Log - Light Theme
-$pfb['uniblock']	= $pfb['aglobal']['uniblock']		?: '#FFF9C4';
-$pfb['unipermit']	= $pfb['aglobal']['unipermit']		?: '#80CBC4';
-$pfb['unimatch']	= $pfb['aglobal']['unimatch']		?: '#B3E5FC';
-$pfb['unidnsbl']	= $pfb['aglobal']['unidnsbl']		?: '#EF9A9A';
-$pfb['unireply']	= $pfb['aglobal']['unireply']		?: '#E8E8E8';
+// Unified Log - Light/Dark Theme colour keys: one registry drives the read defaults, the
+// save loops, and the render loops below. 'upstream' reads with null-coalescing because it
+// was added after the rest -- an existing config predating it lacks the key, so a plain
+// `?:` would warn on the missing offset; the other keys have always been present.
+$uni_defaults = array(
+	'block'    => array('light_default' => '#FFF9C4', 'dark_default' => '#665E17', 'light_help' => 'IP Block Event color',       'dark_help' => 'IP Block Event color',       'gated' => FALSE, 'safe_read' => FALSE),
+	'permit'   => array('light_default' => '#80CBC4', 'dark_default' => '#2D6560', 'light_help' => 'IP Permit Event color',      'dark_help' => 'IP Permit Event color',      'gated' => FALSE, 'safe_read' => FALSE),
+	'match'    => array('light_default' => '#B3E5FC', 'dark_default' => '#336279', 'light_help' => 'IP Match Event color',       'dark_help' => 'IP Match Event color',       'gated' => FALSE, 'safe_read' => FALSE),
+	'dnsbl'    => array('light_default' => '#EF9A9A', 'dark_default' => '#B81717', 'light_help' => 'DNSBL Block Event color',    'dark_help' => 'DNSBL Block Event color',    'gated' => TRUE,  'safe_read' => FALSE),
+	'upstream' => array('light_default' => '#CE93D8', 'dark_default' => '#9C27B0', 'light_help' => 'Upstream Block Event color', 'dark_help' => 'Upstream Block Event color', 'gated' => TRUE,  'safe_read' => TRUE),
+	'reply'    => array('light_default' => '#E8E8E8', 'dark_default' => '#54585E', 'light_help' => 'DNS Reply Event color (Resolver only)', 'dark_help' => 'DNS Reply Event color', 'gated' => TRUE, 'safe_read' => FALSE),
+);
 
-// Unified Log - Dark Theme
-$pfb['uniblock2']	= $pfb['aglobal']['uniblock2']		?: '#83791D';
-$pfb['unipermit2']	= $pfb['aglobal']['unipermit2']		?: '#3B8780';	
-$pfb['unimatch2']	= $pfb['aglobal']['unimatch2']		?: '#42809D';
-$pfb['unidnsbl2']	= $pfb['aglobal']['unidnsbl2']		?: '#E84E4E';
-$pfb['unireply2']	= $pfb['aglobal']['unireply2']		?: '#54585E';
+foreach ($uni_defaults as $u_type => $u_cfg) {
+	$u_light = "uni{$u_type}";
+	$u_dark  = "uni{$u_type}2";
+	if ($u_cfg['safe_read']) {
+		// issue #1792: pfb_is_empty, not ?: -- a stored colour of literally
+		// '0' is the user's (odd) value, not an absence.
+		$pfb[$u_light]	= pfb_is_empty($pfb['aglobal'][$u_light] ?? NULL) ? $u_cfg['light_default'] : $pfb['aglobal'][$u_light];
+		$pfb[$u_dark]	= pfb_is_empty($pfb['aglobal'][$u_dark] ?? NULL) ? $u_cfg['dark_default'] : $pfb['aglobal'][$u_dark];
+	} else {
+		$pfb[$u_light]	= $pfb['aglobal'][$u_light]		?: $u_cfg['light_default'];
+		$pfb[$u_dark]	= $pfb['aglobal'][$u_dark]		?: $u_cfg['dark_default'];
+	}
+}
+
+// Same source and missing-file fallback as head.inc. strpos(..., 'dark') === 0
+// is falsy, so !== FALSE is required.
+$pfb_webgui_css = pfb_effective_webguicss($user_settings ?? null);
+$pfb_webgui_dark = strpos($pfb_webgui_css, 'dark') !== FALSE;
 
 $pfbchartcnt	= $pfb['aglobal']['pfbchartcnt']		?: '24';
 $pfbchartstyle	= $pfb['aglobal']['pfbchartstyle']		?: 'twotone';
 $pfbchart1	= $pfb['aglobal']['pfbchart1']			?: '#0C6197';
 $pfbchart2	= $pfb['aglobal']['pfbchart2']			?: '#7A7A7A';
-$pfbblockstat	= explode(',', $pfb['aglobal']['pfbblockstat']) ?: array();
-$pfbpermitstat	= explode(',', $pfb['aglobal']['pfbpermitstat'])?: array();
-$pfbmatchstat	= explode(',', $pfb['aglobal']['pfbmatchstat'])	?: array();
-$pfbdnsblstat	= explode(',', $pfb['aglobal']['pfbdnsblstat'])	?: array();
-$pfbdnsblreplystat = explode(',', $pfb['aglobal']['pfbdnsblreplystat']) ?: array();
+$pfbblockstat	= pfb_csv_list($pfb['aglobal']['pfbblockstat'] ?? NULL);
+$pfbpermitstat	= pfb_csv_list($pfb['aglobal']['pfbpermitstat'] ?? NULL);
+$pfbmatchstat	= pfb_csv_list($pfb['aglobal']['pfbmatchstat'] ?? NULL);
+$pfbdnsblstat	= pfb_csv_list($pfb['aglobal']['pfbdnsblstat'] ?? NULL);
+$pfbdnsblreplystat = pfb_csv_list($pfb['aglobal']['pfbdnsblreplystat'] ?? NULL);
 
-foreach ($aglobal_array as $type => $value) {
-	${"$type"} = $pfb['aglobal'][$type] != '' ? $pfb['aglobal'][$type] : $value;
-}
+// issue #1497: explicit assignments (was a ${"$type"} variable-variable loop
+// over $aglobal_array) -- PHPStan can't trace a variable-variable target, so
+// every read of these 9 names was flagged as undefined despite always being
+// set here. $aglobal_array itself stays (the save-handler loop below at
+// ~line 592 is a separate consumer that still iterates it).
+$pfbunicnt               = $pfb['aglobal']['pfbunicnt']               != '' ? $pfb['aglobal']['pfbunicnt']               : $aglobal_array['pfbunicnt'];
+$pfbdenycnt              = $pfb['aglobal']['pfbdenycnt']              != '' ? $pfb['aglobal']['pfbdenycnt']              : $aglobal_array['pfbdenycnt'];
+$pfbpermitcnt            = $pfb['aglobal']['pfbpermitcnt']            != '' ? $pfb['aglobal']['pfbpermitcnt']            : $aglobal_array['pfbpermitcnt'];
+$pfbmatchcnt             = $pfb['aglobal']['pfbmatchcnt']             != '' ? $pfb['aglobal']['pfbmatchcnt']             : $aglobal_array['pfbmatchcnt'];
+$pfbdnscnt               = $pfb['aglobal']['pfbdnscnt']               != '' ? $pfb['aglobal']['pfbdnscnt']              : $aglobal_array['pfbdnscnt'];
+$pfbdnsreplycnt          = $pfb['aglobal']['pfbdnsreplycnt']          != '' ? $pfb['aglobal']['pfbdnsreplycnt']          : $aglobal_array['pfbdnsreplycnt'];
+$ipfilterlimitentries    = $pfb['aglobal']['ipfilterlimitentries']    != '' ? $pfb['aglobal']['ipfilterlimitentries']    : $aglobal_array['ipfilterlimitentries'];
+$dnsblfilterlimitentries = $pfb['aglobal']['dnsblfilterlimitentries'] != '' ? $pfb['aglobal']['dnsblfilterlimitentries'] : $aglobal_array['dnsblfilterlimitentries'];
+$dnsfilterlimitentries   = $pfb['aglobal']['dnsfilterlimitentries']   != '' ? $pfb['aglobal']['dnsfilterlimitentries']   : $aglobal_array['dnsfilterlimitentries'];
 
 $alert_view	= 'alert';
 $alert_title	= '';
 $alert_summary	= FALSE;
+// The 'Collect Alert Statistics' block below (reached only when $alert_summary
+// is TRUE) always assigns this fresh; the stats-render section far below reads
+// it only under the identical $alert_summary condition. PHPStan can't trace
+// that two separate `if ($alert_summary)` blocks thousands of lines apart
+// agree, so this default keeps both reads provably defined without changing
+// which branch runs.
+$alert_stats	= array();
 $active		= array('alerts' => TRUE, 'unified' => FALSE, 'ip_block' => FALSE, 'ip_permit' => FALSE, 'ip_match' => FALSE,
 			'dnsbl' => FALSE, 'reply' => FALSE, 'dnsbl_reply_stat' => FALSE);
 
@@ -92,8 +131,13 @@ foreach (array(2,7,8,13,15,17,19,20,99) as $field_1) {
 
 $filterfieldsarray[2]	= array();
 foreach (array(81,82,83,84,85,86,87,88,89) as $field_2) {
-	$filterfieldsarray[1][$field_2] = '';
+	$filterfieldsarray[2][$field_2] = '';
 }
+
+// $alert_log is set by the view handler below but read in the stats section much later;
+// default it so it is defined when that section runs without a view request. file_exists('')
+// is false, so the stats block is skipped exactly as it was when $alert_log was undefined.
+$alert_log = '';
 
 if (isset($_GET) && isset($_GET['view']) || isset($_REQUEST) && isset($_REQUEST['alert_view'])) {
 	switch($_GET['view'] != '' ? $_GET['view'] : $_REQUEST['alert_view']) {
@@ -153,16 +197,21 @@ if (isset($_GET) && isset($_GET['view']) || isset($_REQUEST) && isset($_REQUEST[
 	}
 }
 
+// $clists is read later in contexts PHPStan can't prove are guarded; default it so it is
+// defined even when the (!$alert_summary) collection block below is skipped (empty = no lists).
+$clists = array();
+
 // Collect all Whitelist/Suppression/Permit/Exclusion customlists
 if (!$alert_summary) {
 
-	$clists = array();
 	foreach (array('ipwhitelist4' => 4, 'ipwhitelist6' => 6, 'dnsbl' => 'dnsbl') as $type => $vtype) {
 		$c_config = $clists[$type] = array();
 
 		if ($vtype == 'dnsbl') {
+			// foreign structure: pfblockerngdnsbl is a dynamic per-feed list section, not in registry
 			$c_config = config_get_path('installedpackages/pfblockerngdnsbl');
 		} else {
+			// foreign structure: pfblockernglistsv4/v6 are dynamic per-feed list sections, not in registry
 			$c_config = config_get_path("installedpackages/pfblockernglistsv{$vtype}");
 		}
 
@@ -170,31 +219,34 @@ if (!$alert_summary) {
 		    !empty($c_config['config'])) {
 
 			foreach ($c_config['config'] as $row => $data) {
-				if (strpos($data['action'], 'Permit') !== FALSE || $data['action'] == 'unbound') {
+				$group_action = $data['action'] ?? NULL;
+				$group_type = $type == 'dnsbl' ? 'dnsbl' : 'ipv4';
+				if (pfb_group_action_valid($group_action, $group_type) &&
+				    (strpos($group_action, 'Permit') !== FALSE || $group_action == 'unbound')) {
 
 					if ($type == 'dnsbl') {
 						$lname = "DNSBL_{$data['aliasname']}";
+						// foreign structure: pfblockerngdnsbl/config/{row}/custom is a dynamic per-row key, not in registry
 						$clists[$type][$lname]['base64'] = config_get_path("installedpackages/pfblockerngdnsbl/config/{$row}/custom");
 						$clists[$type][$lname]['base64_idx'] = $row;
 
-						// Collect Global DNSBL Logging type, or Group logging setting
-						$g_log = config_get_path('installedpackages/pfblockerngdnsblsettings/config/0/global_log') ?: '';
-						if (empty($g_log)) {
-							$d_log = config_get_path("installedpackages/pfblockerngdnsbl/config/{$row}/logging");
-						} else {
-							$d_log = $g_log;
-						}
+						// issue #3288: the shared resolver every consumer reuses -- resolves
+						// Default live-inheritance / Override precedence / the legacy
+						// projection identically to the DNSBL settings and category pages.
+						$d_log = pfb_dnsbl_effective_logging(
+							// foreign structure: pfblockerngdnsbl/config/{row}/logging is a dynamic per-row key, not in registry
+							config_get_path("installedpackages/pfblockerngdnsbl/config/{$row}/logging"),
+							$pfb['dnsbl_global_log'],
+							$pfb['dnsbl_global_mode'],
+							$pfb['dnsbl_policy_legacy']
+						);
 
-						if ($d_log == 'disabled_log') {
-							$d_type = '0';
-						} elseif ($d_log == 'enabled') {
-							$d_type = '1';
-						} else {
-							$d_type = '2';
-						}
+						// issue #3291: the one mechanism -> DNSBL logging flag mapping shared with the manifest.
+						$d_type = pfb_dnsbl_mechanism_flag($d_log);
 						$clists[$type][$lname]['log'] = $d_type;
 					} else {
 						$lname = "pfB_{$data['aliasname']}_v{$vtype}";
+						// foreign structure: pfblockernglistsv4/v6/config/{row}/custom is a dynamic per-row key, not in registry
 						$clists[$type][$lname]['base64'] = config_get_path("installedpackages/pfblockernglistsv{$vtype}/config/{$row}/custom");
 						$clists[$type][$lname]['base64_idx'] = $row;
 					}
@@ -202,7 +254,10 @@ if (!$alert_summary) {
 
 					$clists[$type]['options'][] = $lname;	// List of all Permit Aliases/DNSBL Customlists
 
-					$decoded = pfbng_text_area_decode($data['custom'], TRUE, TRUE);
+					// issue #1782: $idn=TRUE -- matches pfblockerng_apply.inc:1758's decode of
+					// this SAME per-row 'custom' field; a Unicode key here would never match
+					// a $domain derived from a punycode log field.
+					$decoded = pfb_text_area_decode($data['custom'], TRUE, TRUE, TRUE);
 					if (!empty($decoded)) {
 						foreach ($decoded as $line) {
 
@@ -229,32 +284,41 @@ if (!$alert_summary) {
 		}
 	}
 
-	config_set_path('installedpackages/pfblockerngipsettings/config/0/v4suppression', 
-		config_get_path('installedpackages/pfblockerngipsettings/config/0/v4suppression') ?: '');
+	PfbConfig::write('ip/v4suppression', PfbConfig::read('ip/v4suppression') ?: '');
 
-	config_set_path('installedpackages/pfblockerngdnsblsettings/config/0/suppression',
-		config_get_path('installedpackages/pfblockerngdnsblsettings/config/0/suppression') ?: '');
+	// ADR-53: v6 sibling -- same absent-key normalisation as v4suppression above.
+	PfbConfig::write('ip/v6suppression', PfbConfig::read('ip/v6suppression') ?: '');
 
-	config_set_path('installedpackages/pfblockerngdnsblsettings/config/0/tldexclusion',
-		config_get_path('installedpackages/pfblockerngdnsblsettings/config/0/tldexclusion') ?: '');
+	PfbConfig::write('dnsbl/whitelist', PfbConfig::read('dnsbl/whitelist') ?: '');
 
-	foreach (array('ipsuppression', 'dnsblwhitelist', 'tldexclusion') as $key => $type) {
+	PfbConfig::write('dnsbl/tld_wildcard_exclusion', PfbConfig::read('dnsbl/tld_wildcard_exclusion') ?: '');
+
+	// ADR-53: 'ipsuppression_v6' is the new v6suppression sibling of
+	// 'ipsuppression' (v4) -- same collection shape, keyed separately so the
+	// addsuppress handler below can dedup/rewrite each family's customlist
+	// independently.
+	foreach (array('ipsuppression', 'ipsuppression_v6', 'dnsblwhitelist', 'tld_wildcard_exclusion') as $key => $type) {
 
 		if (!isset($clists[$type]) || !is_array($clists[$type])) {
 			$clists[$type] = array();
 		}
 
 		if ($key == 0) {
-			$clists[$type]['base64'] = config_get_path('installedpackages/pfblockerngipsettings/config/0/v4suppression');
+			$clists[$type]['base64'] = PfbConfig::read('ip/v4suppression');
 		} elseif ($key == 1) {
-			$clists[$type]['base64'] = config_get_path('installedpackages/pfblockerngdnsblsettings/config/0/suppression');
+			$clists[$type]['base64'] = PfbConfig::read('ip/v6suppression');
 		} elseif ($key == 2) {
-			$clists[$type]['base64'] = config_get_path('installedpackages/pfblockerngdnsblsettings/config/0/tldexclusion');
+			$clists[$type]['base64'] = PfbConfig::read('dnsbl/whitelist');
+		} elseif ($key == 3) {
+			$clists[$type]['base64'] = PfbConfig::read('dnsbl/tld_wildcard_exclusion');
 		}
 
 		$clists[$type]['data']		= array();
 		if (isset($clists[$type]['base64']) && !empty($clists[$type]['base64'])) {
-			$decoded = pfbng_text_area_decode($clists[$type]['base64'], TRUE, TRUE);
+			// issue #1782: $idn=TRUE -- 'whitelist'/'tld_wildcard_exclusion' are decoded with
+			// $idn=TRUE by their runtime consumers (pfblockerng.inc); a Unicode key
+			// here would never match a $domain derived from a punycode log field.
+			$decoded = pfb_text_area_decode($clists[$type]['base64'], TRUE, TRUE, TRUE);
 			if (!empty($decoded)) {
 				foreach ($decoded as $line) {
 
@@ -429,7 +493,7 @@ $options_pfbdnsblstat	= [	'dnsblchart'	=> 'DNSBL Event Timeline',
 				'dnsblgpblock'	=> 'Top Blocked Group',
 				'dnsblfeed'	=> 'Top Blocked Feed',
 				'dnsblip'	=> 'Top Source IP',
-				'dnsblagent'	=> $pfb['dnsbl_py_blacklist'] ? 'Top Blocking mode' : 'Top User-Agent',
+				'dnsblagent'	=> 'Top Blocking mode',
 				'dnsbltld'	=> 'Top TLD',
 				'dnsblwebtype'	=> 'Top Webpage Types',
 				'dnsblmode'	=> 'Top DNSBL Modes',
@@ -467,6 +531,8 @@ if (isset($_POST) && !empty($_POST)) {
 						);
 
 		foreach ($select_options as $s_option => $s_default) {
+			// issue #3543: a select the native form omits reads as null; default it before array_key_exists()
+			$_POST[$s_option] ??= $s_default;
 			if (is_array($_POST[$s_option])) {
 				$_POST[$s_option] = $s_default;
 			}
@@ -488,6 +554,7 @@ if (isset($_POST) && !empty($_POST)) {
 		$select_ip_options = array( 'pfbblockstat', 'pfbpermitstat', 'pfbmatchstat' );
 
 		foreach ($select_options as $s_option => $s_default) {
+			$_POST[$s_option] ??= $s_default;
 
 			// Array to validate against
 			if (in_array($s_option, $select_ip_options)) {
@@ -509,17 +576,15 @@ if (isset($_POST) && !empty($_POST)) {
 			}
 		}
 
-		// Unified Log - Light Theme Hex settings
-		foreach (array('uniblock' => '#FFF9C4', 'unipermit' => '#80CBC4', 'unimatch' => '#B3E5FC', 'unidnsbl' => '#EF9A9A', 'unireply' => '#E8E8E8') as $h_type => $h_default) {
-			if (isset($_POST[$h_type]) && !empty($_POST[$h_type])) {
-				$pfb['aglobal'][$h_type] = pfb_filter($_POST[$h_type], PFB_FILTER_HEX_COLOR, 'alerts hex', $h_default);
-			} else {
-				$pfb['aglobal'][$h_type] = $h_default;
-			}
+		// Unified Log - Light/Dark Theme Hex settings
+		$uni_hex_fields = array();
+		foreach ($uni_defaults as $u_type => $u_cfg) {
+			$uni_hex_fields["uni{$u_type}"] = $u_cfg['light_default'];
 		}
-
-		// Unified Log - Dark Theme Hex settings
-		foreach (array('uniblock2' => '#83791D', 'unipermit2' => '#3B8780', 'unimatch2' => '#42809D', 'unidnsbl2' => '#E84E4E', 'unireply2' => '#54585E') as $h_type => $h_default) {
+		foreach ($uni_defaults as $u_type => $u_cfg) {
+			$uni_hex_fields["uni{$u_type}2"] = $u_cfg['dark_default'];
+		}
+		foreach ($uni_hex_fields as $h_type => $h_default) {
 			if (isset($_POST[$h_type]) && !empty($_POST[$h_type])) {
 				$pfb['aglobal'][$h_type] = pfb_filter($_POST[$h_type], PFB_FILTER_HEX_COLOR, 'alerts hex', $h_default);
 			} else {
@@ -537,7 +602,10 @@ if (isset($_POST) && !empty($_POST)) {
 			$pfb['aglobal']['pfbchart2'] = pfb_filter($_POST['pfbchart2'], PFB_FILTER_HEX_COLOR, 'alerts hex', '#7A7A7A');
 		}
 
-		$pfb['aglobal']['alertrefresh']		= pfb_filter($_POST['alertrefresh'], PFB_FILTER_ON_OFF, 'alerts alertrefresh');
+		// issue #2123: an unchecked checkbox is absent from $_POST; PFB_FILTER_ON_OFF
+		// emits the owner-ruled empty Off token for it, and writeSection() below
+		// normalises the value through the key's registered adapter.
+		$pfb['aglobal']['alertrefresh']		= pfb_filter($_POST['alertrefresh'] ?? '', PFB_FILTER_ON_OFF, 'alerts alertrefresh');
 
 		$pfb['aglobal']['pfbpageload']		= $_POST['pfbpageload']					?: 'unified';
 		$pfb['aglobal']['pfbmaxtable']		= $_POST['pfbmaxtable']					?: '1000';
@@ -553,7 +621,7 @@ if (isset($_POST) && !empty($_POST)) {
 		$pfb['aglobal']['pfbdnsblreplystat']	= implode(',', (array)$_POST['pfbdnsblreplystat'])	?: '';
 
 		foreach ($aglobal_array as $type => $value) {
-			if (ctype_digit($_POST[$type]) && $_POST[$type] <= 5000) {
+			if (ctype_digit($_POST[$type] ?? '') && $_POST[$type] <= 5000) {
 				$pfb['aglobal'][$type] = $_POST[$type];
 			} else {
 				$pfb['aglobal'][$type] = $value;
@@ -570,8 +638,8 @@ if (isset($_POST) && !empty($_POST)) {
 			$pageview = 'alert';
 		}
 
-		config_set_path("installedpackages/pfblockerngglobal", $pfb['aglobal']);
-		write_config('pfBlockerNG: Update ALERT tab settings.', false);
+		PfbConfig::writeSection('installedpackages/pfblockerngglobal', $pfb['aglobal']);
+		write_config('pfBlockerNG: Update ALERT tab settings.', FALSE);
 		header("Location: /pfblockerng/pfblockerng_alerts.php?view={$pageview}");
 		exit;
 	}
@@ -729,19 +797,14 @@ if (isset($_POST) && !empty($_POST)) {
 		$filterfieldsarray = array();
 	}
 
-	// Add an IPv4 (/32 or /24 only) to the suppression customlist
+	// Add a host to the suppression customlist.
 	elseif (isset($_POST['addsuppress']) && !empty($_POST['addsuppress'])) {
+		$ip	= pfb_filter($_POST['ip'], PFB_FILTER_IP, 'alerts addsuppress');
+		$table	= pfb_filter($_POST['table'], PFB_FILTER_WORD, 'alerts addsuppress');
 
-		$cidr = '';
-		if ($_POST['cidr'] == '32' || $_POST['cidr'] == '24') {
-			$cidr = $_POST['cidr'];
-		}
-		$ip	= pfb_filter($_POST['ip'], PFB_FILTER_IPV4, 'alerts addsuppress', '', TRUE);
-		$table	= pfb_filter($_POST['table'], PFB_FILTER_WORD, 'alerts addsuppress', '', TRUE);
-
-		// If IP is not valid or CIDR field is empty, or Table not valid exit
-		if (empty($ip) || empty($cidr) || empty($table)) {
-			$savemsg = gettext('Cannot Suppress: IPv4 not valid or CIDR value missing or Table not valid');
+		// If IP is not valid or Table not valid, exit.
+		if (empty($ip) || empty($table)) {
+			$savemsg = gettext('Cannot Suppress: IP address not valid or Table not valid');
 			header("Location: /pfblockerng/pfblockerng_alerts.php?savemsg={$savemsg}");
 			exit;
 		}
@@ -750,83 +813,8 @@ if (isset($_POST) && !empty($_POST)) {
 		if (isset($_POST['descr']) && !empty($_POST['descr'])) {
 			$descr = pfb_filter($_POST['descr'], PFB_FILTER_HTML, 'alerts addsuppress');
 		}
-
-		$savemsg1 = "Host IP address {$ip}";
-		$ix = ip_explode(trim($ip, "'"));	// Explode IP into evaluation strings
-		if ($cidr == '32') {
-
-			$pfb_pfctl = exec("{$pfb['pfctl']} -t {$table} -T show | grep {$ip} 2>&1");
-			if (!empty($pfb_pfctl)) {
-				$savemsg2 = ' : Removed /32 entry';
-				exec("{$pfb['pfctl']} -t {$table} -T delete {$ip} 2>&1");
-			}
-			else {
-				$pfb_pfctl = array();
-				$ip_esc = escapeshellarg("{$ix[5]}");
-				exec("{$pfb['pfctl']} -t {$table} -T delete {$ip_esc} 2>&1", $pfb_pfctl);
-				if (preg_grep("/1\/1 addresses deleted/", $pfb_pfctl)) {
-					$savemsg2 = ' : Removed /24 entry, added 254 addr';
-					for ($k=0; $k <= 255; $k++) {
-						if ($k != $ix[4]) {
-							$ip_esc = escapeshellarg("{$ix[6]}{$k}");
-							exec("{$pfb['pfctl']} -t {$table} -T add {$ip_esc} 2>&1");
-						}
-					}
-				}
-				else {
-					$savemsg = gettext("Not Suppressed. Host IP address {$ip} is blocked by a CIDR other than /24");
-					header("Location: /pfblockerng/pfblockerng_alerts.php?savemsg={$savemsg}");
-					exit;
-				}
-			}
-		}
-		else {
-			$cidr = '24';
-			$savemsg2 = ' : Removed /24 entry';
-			$pfb_pfctl = array();
-			$ip_esc = escapeshellarg("{$ix[5]}");
-			exec("{$pfb['pfctl']} -t {$table} -T delete {$ip_esc} 2>&1", $pfb_pfctl);
-			if (!preg_grep("/1\/1 addresses deleted/", $pfb_pfctl)) {
-				$savemsg2 = ' : Removed all entries';
-				// Remove 0-255 IP address from alias table
-				for ($j=0; $j <= 255; $j++) {
-					$ip_esc = escapeshellarg("{$ix[6]}{$j}");
-					exec("{$pfb['pfctl']} -t {$table} -T delete {$ip_esc} 2>&1");
-				}
-			}
-		}
-
-		// Save IP to the v4 Suppression List
-		if (isset($clists['ipsuppression']['data'][$ix[5]]) || isset($clists['ipsuppression']['data'][$ix[0] . '/32'])) {
-			$savemsg = gettext("Host IP address {$ip} already exists in the IPv4 Suppression customlist.");
-		} else {
-			$v4suppression_dat = '';
-			if ($cidr == '24') {
-				$v4suppression_dat .= "{$ix[5]}";
-			} else {
-				$v4suppression_dat .= "{$ix[0]}/32";
-			}
-
-			if (!empty($descr)) {
-				$v4suppression_dat .= " # {$descr}";
-			}
-
-			$savemsg = gettext($savemsg1) . gettext($savemsg2) . gettext(' and added to the IPv4 Suppression customlist.');
-			$pfbupdate = TRUE;
-		}
-
-		if ($pfbupdate) {
-			$data = '';
-			foreach ($clists['ipsuppression']['data'] as $line) {
-				$data .= "{$line}";
-			}
-			$data .= "{$v4suppression_dat}\r\n";
-			$clists['ipsuppression']['base64'] = base64_encode($data);
-			config_set_path('installedpackages/pfblockerngipsettings/config/0/v4suppression', $clists['ipsuppression']['base64']);
-			write_config("pfBlockerNG: Added {$ip} to the IPv4 Suppression customlist", false);
-			pfb_create_suppression_file();	// Create pfbsuppression.txt
-		}
-		header("Location: /pfblockerng/pfblockerng_alerts.php?savemsg={$savemsg}");
+		$result = pfb_alerts_ip_action('addsuppress', $ip, $table, $descr, $clists, $ip_unlock);
+		header("Location: /pfblockerng/pfblockerng_alerts.php?savemsg={$result['savemsg']}");
 		exit;
 	}
 
@@ -847,23 +835,53 @@ if (isset($_POST) && !empty($_POST)) {
 		if (isset($_POST['descr']) && !empty($_POST['descr'])) {
 			$descr = pfb_filter($_POST['descr'], PFB_FILTER_HTML, 'alerts dnsbl_add');
 		}
-		$group = preg_replace('/DNSBL_/', '', $list, 1) . '_custom';
+		// Issue #37: adding a domain to a Custom_List is the user's "block this"
+		// intent. If the same domain sits in the DNSBL Whitelist, the two user stores
+		// would silently disagree -- the band-6 whitelist would keep it resolving
+		// despite the new band-5 Custom_List block. Newest action wins: strip it from
+		// the whitelist so the block takes effect. (The dead file_put_contents into
+		// pfb_py_data/pfb_py_zone was removed: under ADR-06 the resolver builds the
+		// DNSBL structures from the manifest raws, never those legacy CSVs -- see
+		// pfb_unbound.py's 'if not dnsbl_built' guard.)
+		$wl_base = $domain;
+		if (str_starts_with($wl_base, 'www.')) {
+			$wl_base = substr($wl_base, 4);
+		}
+		$wl_variants = array($wl_base, "www.{$wl_base}");
+		if ($_POST['dnsbl_wildcard'] == 'true') {
+			$wl_variants[] = ".{$wl_base}";
+		}
+		$wl_removed = FALSE;
+		foreach ($wl_variants as $variant) {
+			if (isset($clists['dnsblwhitelist']['data'][$variant])) {
+				unset($clists['dnsblwhitelist']['data'][$variant]);
+				$wl_removed = TRUE;
+			}
+		}
+		if ($wl_removed) {
+			$data = '';
+			foreach ($clists['dnsblwhitelist']['data'] as $line) {
+				// Drop CNAME entries that had been whitelisted for this domain
+				if (strpos($line, "({$wl_base})") === FALSE) {
+					$data .= "{$line}";
+				}
+			}
+			$clists['dnsblwhitelist']['base64'] = pfb_text_area_encode($data);
+			PfbConfig::write('dnsbl/whitelist', $clists['dnsblwhitelist']['base64']);
+			// issue #1872: this description is user-facing (Diagnostics > Config History),
+			// so it spells the field the way the UI does -- "Custom List", not the
+			// code-level "Custom_List".
+			write_config("pfBlockerNG: Removed [ {$wl_base} ] from DNSBL Whitelist (added to Custom List)", FALSE);
 
-		// Collect Global DNSBL Logging type, or Group logging setting
-		$dnsbl_add_log_type = $clists['dnsbl'][$list]['log'];
-		if (!in_array($dnsbl_add_log_type, array('0', '1', '2'))) {
-			$dnsbl_add_log_type = '1';
+			// Refresh the query-time whiteDB so the domain is no longer allowed.
+			pfb_unbound_python_whitelist('alerts');
+			pfb_unbound_python_sources_whitelist();
 		}
 	
-		if ($_POST['dnsbl_wildcard'] == 'true') {
-			@file_put_contents($pfb['unbound_py_zone'], ",{$domain},,{$dnsbl_add_log_type},{$group},{$list}\n", FILE_APPEND);
-		} else {
-			@file_put_contents($pfb['unbound_py_data'], ",{$domain},,{$dnsbl_add_log_type},{$group},{$list}\n", FILE_APPEND);
-		}
-
 		$savemsg = gettext(" Added domain [ {$domain} ] to the DNSBL Group [ $list ] customlist. You may need to flush your OS/Browser DNS Cache!");
 
 		// Save changes
+		$cl_added = FALSE;
 		if (!isset($clists['dnsbl'][$list]['data'][$domain])) {
 			$data = '';
 			if (isset($clists['dnsbl'][$list]) && is_array($clists['dnsbl'][$list]['data'])) {
@@ -877,13 +895,29 @@ if (isset($_POST) && !empty($_POST)) {
 			} else {
 				$data .= "{$domain}\r\n";
 			}
-			$clists['dnsbl'][$list]['base64'] = base64_encode($data);
+			$clists['dnsbl'][$list]['base64'] = pfb_text_area_encode($data);
+			// foreign structure: pfblockerngdnsbl/config/{row}/custom is a dynamic per-row key, not in registry
 			config_set_path("installedpackages/pfblockerngdnsbl/config/{$clists['dnsbl'][$list]['base64_idx']}/custom", $clists['dnsbl'][$list]['base64']);
-			write_config("pfBlockerNG: Added [ {$domain} ] to DNSBL Group [ {$list} ] customlist", false);
-			pfb_reload_unbound('enabled', FALSE, TRUE);
+			write_config("pfBlockerNG: Added [ {$domain} ] to DNSBL Group [ {$list} ] customlist", FALSE);
+			$cl_added = TRUE;
 		}
 		else {
 			$savemsg = gettext("Domain [ {$domain} ] already exists in DNSBL Group [ $list ] customlist");
+		}
+
+		// Issue #37: note the reverse-direction reconciliation in the UI message.
+		if ($wl_removed) {
+			$savemsg .= gettext(' Removed [ ') . "{$wl_base}" . gettext(' ] from the DNSBL Whitelist.');
+		}
+
+		// Reload if the Custom_List grew or the domain was stripped from the whitelist.
+		// ADR-10: this is a #51 user custom-list DATA edit -- take the zero-downtime
+		// fast path (no restart), then flush this exact allow-to-block change.
+		if ($cl_added || $wl_removed) {
+			$swapped = pfb_reload_unbound('enabled', TRUE, TRUE);
+			if ($swapped) {
+				pfb_unbound_py_ccache_flush(array($domain));
+			}
 		}
 
 		$return_page = pfb_filter($_POST['alert_view'], PFB_FILTER_HTML, 'alerts dnsbl_add');
@@ -907,6 +941,8 @@ if (isset($_POST) && !empty($_POST)) {
 			header("Location: /pfblockerng/pfblockerng_alerts.php?savemsg={$savemsg}");
 			exit;
 		}
+		// issue #2670: unlock store is keyed by the posted token; www. is stripped below
+		$domain_unlock = $domain;
 
 		$descr = '';
 		if (isset($_POST['descr']) && !empty($_POST['descr'])) {
@@ -928,31 +964,46 @@ if (isset($_POST) && !empty($_POST)) {
 		if (!empty(pfb_filter($pfb['extdns'], PFB_FILTER_IP, 'alerts addwhitelistdom'))) {
 			$domain_esc	= escapeshellarg($domain);
 			$ext_dns 	= escapeshellarg("@{$pfb['extdns']}");
-			exec("/usr/bin/drill {$domain_esc} {$extdns} | /usr/bin/awk '/CNAME/ {sub(\"\.\$\", \"\", \$5); print \$5;}' 2>&1", $cname_list);
+			$drill_esc	= escapeshellarg($pfb['drill'] ?? '/usr/bin/drill');
+			$timeout_esc	= escapeshellarg($pfb['timeout'] ?? '/usr/bin/timeout');
+			// 30s DNS ceiling matches the established SafeSearch and whoisconvert lookups (#2014/#2015).
+			$cname_lookup_timeout = 30;
+			$cname_lookup_kill_grace = 5;
+			$cname_lookup_prefix = "{$g['tmp_path']}/pfb_alerts_cname_" . getmypid() . '_' . bin2hex(random_bytes(8));
+			$cname_lookup_file = "{$cname_lookup_prefix}_result";
+			$cname_lookup_raw_file = "{$cname_lookup_prefix}_raw";
+			$cname_lookup_pipeline = "{$drill_esc} {$domain_esc} {$ext_dns} > " . escapeshellarg($cname_lookup_raw_file) .
+				" 2>&1 && /usr/bin/awk '/CNAME/ {sub(\"[.]\$\", \"\", \$5); print \$5;}' " . escapeshellarg($cname_lookup_raw_file);
+			$cname_lookup_cmd = "{$timeout_esc} -s TERM -k {$cname_lookup_kill_grace} {$cname_lookup_timeout} /bin/sh -c " .
+				escapeshellarg($cname_lookup_pipeline) . ' > ' . escapeshellarg($cname_lookup_file) . " 2>&1 < /dev/null";
+			$cname_lookup_output = array();
+			$cname_lookup_status = 0;
+			exec($cname_lookup_cmd, $cname_lookup_output, $cname_lookup_status);
+			if ($cname_lookup_status === 124) {
+				pfb_logger("\npfblockerng_alerts: CNAME lookup TIMED OUT (killed); discarding partial output\n", 2);
+			} elseif ($cname_lookup_status !== 0) {
+				pfb_logger("\npfblockerng_alerts: CNAME lookup FAILED (exit {$cname_lookup_status}); discarding output\n", 2);
+			} elseif (!is_file($cname_lookup_file)) {
+				pfb_logger("\npfblockerng_alerts: CNAME lookup FAILED (capture missing); discarding output\n", 2);
+			} else {
+				$cname_list = file($cname_lookup_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array();
+			}
+			@unlink($cname_lookup_file);
+			@unlink($cname_lookup_raw_file);
 		}
 
 		// Remove 'www.' prefix
-		if (substr($domain, 0, 4) == 'www.') {
+		if (str_starts_with($domain, 'www.')) {
 			$domain = substr($domain, 4);
 		}
 
 		// Whitelist Domain/CNAME(s)
 		if (!$dnsbl_exclude) {
 
-			// Collect Domains/Sub-Domains to Whitelist (used by grep -vF -f cmd to remove Domain/Sub-Domains)
-			if ($wildcard) {
-				if ($pfb['dnsbl_py_blacklist']) {
-					$dnsbl_remove = ".{$domain},,\n,{$domain},,\n";
-				} else {
-					$dnsbl_remove = ".{$domain} 60\n\"{$domain} 60\n";
-				}
-			} else {
-				if ($pfb['dnsbl_py_blacklist']) {
-					$dnsbl_remove = ",{$domain},,\n,www.{$domain},,\n";
-				} else {
-					$dnsbl_remove = "\"{$domain} 60\n\"www.{$domain} 60\n";
-				}
-			}
+			// Issue #37: collect the canonical domains being whitelisted so the same
+			// set can be stripped from any user DNSBL Group Custom_List below --
+			// reconcile the two user stores instead of only out-ranking at query time.
+			$wl_domains = array($domain);
 
 			if (!empty($descr)) {
 				if ($wildcard) {
@@ -985,20 +1036,10 @@ if (isset($_POST) && !empty($_POST)) {
 
 					$removed .= "{$cname} | ";
 
-					if ($pfb['dnsbl_py_blacklist']) {
-						$dnsbl_remove .= ",{$cname},,\n";
-					} else {
-						$dnsbl_remove .= "\"{$cname} 60\n";
-					}
+					$wl_domains[] = $cname;
 
 					if ($wildcard) {
 						$whitelist .= '.';
-
-						if ($pfb['dnsbl_py_blacklist']) {
-							$dnsbl_remove .= ".{$cname},,\n";
-						} else {
-							$dnsbl_remove .= ".{$cname} 60\n";
-						}
 					}
 					$whitelist .= "{$cname} # CNAME for ({$domain})";
 
@@ -1013,8 +1054,10 @@ if (isset($_POST) && !empty($_POST)) {
 			}
 			$savemsg .= gettext(" from DNSBL. You may need to flush your OS/Browser DNS Cache!");
 
-			// Save changes
-			if (!isset($clists['dnsblwhitelist']['data'][$domain])) {
+			// Save changes. Exact apex already listed must not skip a
+			// leading-dot wildcard write — TLD/zone children stay blocked
+			// until ".{$domain}" exists.
+			if (pfb_alerts_whitelist_needs_write($clists['dnsblwhitelist']['data'], $domain, $wildcard)) {
 				$data = '';
 				if (isset($clists['dnsblwhitelist']) && is_array($clists['dnsblwhitelist']['data'])) {
 					foreach ($clists['dnsblwhitelist']['data'] as $line) {
@@ -1022,67 +1065,61 @@ if (isset($_POST) && !empty($_POST)) {
 					}
 				}
 				$data .= "{$whitelist}\r\n";
-				$clists['dnsblwhitelist']['base64'] = base64_encode($data);
-				config_set_path("installedpackages/pfblockerngdnsblsettings/config/0/suppression", $clists['dnsblwhitelist']['base64']);
-				write_config("pfBlockerNG: Added [ {$domain} ] to DNSBL Whitelist", false);
+				$clists['dnsblwhitelist']['base64'] = pfb_text_area_encode($data);
+				PfbConfig::write('dnsbl/whitelist', $clists['dnsblwhitelist']['base64']);
+				write_config("pfBlockerNG: Added [ {$domain} ] to DNSBL Whitelist", FALSE);
 			}
 
-			// Create tempfile for DNSBL Whitelisting
-			$tmp = tempnam('/tmp', 'dnsbl_alert_');
-
-			// Save DNSBL Whitelist file of Domain/CNAME(s)
-			@file_put_contents("{$tmp}.adup", $dnsbl_remove, LOCK_EX);
-
-			if (file_exists("{$tmp}.adup") && filesize("{$tmp}.adup") > 0) {
-				if ($pfb['dnsbl_py_blacklist']) {
-					exec("{$pfb['ggrep']} -vF -f " . escapeshellarg("{$tmp}.adup") . " {$pfb['unbound_py_data']} > "
-						. escapeshellarg("{$tmp}.tmp") . "; mv -f " . escapeshellarg("{$tmp}.tmp") . " {$pfb['unbound_py_data']}"); 
-					exec("{$pfb['ggrep']} -vF -f " . escapeshellarg("{$tmp}.adup") . " {$pfb['unbound_py_zone']} > " . escapeshellarg("{$tmp}.tmp")
-						. "; mv -f " . escapeshellarg("{$tmp}.tmp") . " {$pfb['unbound_py_zone']}");
-					pfb_unbound_python_whitelist('alerts');
-					pfb_reload_unbound('enabled', FALSE);
-				} else {
-					// Collect all matching whitelisted Domain/CNAME(s)
-					exec("{$pfb['ggrep']} -F -f " . escapeshellarg("{$tmp}.adup") . " {$pfb['dnsbl_file']}.conf > " . escapeshellarg("{$tmp}.supp") . " 2>&1");
-
-					// Remove Whitelisted Domain from Unbound database
-					exec("{$pfb['ggrep']} -vF -f " . escapeshellarg("{$tmp}.adup") . " {$pfb['dnsbl_file']}.conf > " . escapeshellarg("{$tmp}.tmp")
-						. "; mv -f " . escapeshellarg("{$tmp}.tmp") . " {$pfb['dnsbl_file']}.conf");
-
-					// Remove Whitelisted Domain from DNSBL Feed
-					$table_esc = escapeshellarg("{$pfb['dnsdir']}/{$table}.txt");
-					exec("{$pfb['ggrep']} -vF -f " . escapeshellarg("{$tmp}.adup") . " {$table_esc} > " . escapeshellarg("{$tmp}.tmp")
-						. "; mv -f " . escapeshellarg("{$tmp}.tmp") . " {$table_esc}");
+			// Issue #37: reconcile the two user stores. Whitelisting a domain is the
+			// user's "stop blocking this" intent, so also strip it (its www. and, when
+			// wildcarded, leading-dot forms) from every user DNSBL Group Custom_List --
+			// the stores then agree at rest, not merely via query-time band precedence
+			// (whitelist band 6 > Custom_List band 5). The dead 'grep -vF' of
+			// pfb_py_data/pfb_py_zone was removed: under ADR-06 the resolver builds the
+			// DNSBL structures from the manifest raws, never those legacy CSVs.
+			$cl_changed = array();
+			if (isset($clists['dnsbl']) && is_array($clists['dnsbl'])) {
+				foreach ($wl_domains as $wl_dom) {
+					$variants = array($wl_dom, "www.{$wl_dom}");
+					if ($wildcard) {
+						$variants[] = ".{$wl_dom}";
+					}
+					foreach ($clists['dnsbl'] as $lname => $linfo) {
+						if (!is_array($linfo) || !isset($linfo['data']) || !is_array($linfo['data'])) {
+							continue;	// skip the 'options' helper key
+						}
+						foreach ($variants as $variant) {
+							if (isset($clists['dnsbl'][$lname]['data'][$variant])) {
+								unset($clists['dnsbl'][$lname]['data'][$variant]);
+								$cl_changed[$lname] = TRUE;
+							}
+						}
+					}
 				}
 			}
-
-			// Remove all Whitelisted Domain/CNAME(s) from Unbound using unbound-control
-			if (!$pfb['dnsbl_py_blacklist'] && file_exists("{$tmp}.supp") && filesize("{$tmp}.supp") > 0) {
-
-				exec("{$pfb['grep']} 'local-zone:' " . escapeshellarg("{$tmp}.supp") . " | {$pfb['cut']} -d '\"' -f2 > " . escapeshellarg("{$tmp}.zone") . " 2>&1");
-				exec("{$pfb['grep']} '^local-data:' " . escapeshellarg("{$tmp}.supp") . " | {$pfb['cut']} -d ' ' -f2 | tr -d '\"' > " . escapeshellarg("{$tmp}.data") . " 2>&1");
-
-				if (file_exists("{$tmp}.zone") && filesize("{$tmp}.zone") > 0) {
-					exec("{$pfb['chroot_cmd']} local_zones_remove < " . escapeshellarg("{$tmp}.zone") . " 2>&1");
+			foreach (array_keys($cl_changed) as $lname) {
+				$data = '';
+				foreach ($clists['dnsbl'][$lname]['data'] as $line) {
+					$data .= "{$line}";
 				}
-				if (file_exists("{$tmp}.data") && filesize("{$tmp}.data") > 0) {
-					exec("{$pfb['chroot_cmd']} local_datas_remove < " . escapeshellarg("{$tmp}.data") . " 2>&1");
-				}
+				$clists['dnsbl'][$lname]['base64'] = pfb_text_area_encode($data);
+				// foreign structure: pfblockerngdnsbl/config/{row}/custom is a dynamic per-row key, not in registry
+				config_set_path("installedpackages/pfblockerngdnsbl/config/{$clists['dnsbl'][$lname]['base64_idx']}/custom", $clists['dnsbl'][$lname]['base64']);
+				write_config("pfBlockerNG: Removed [ {$domain} ] from DNSBL Group [ {$lname} ] customlist (whitelisted)", FALSE);
 			}
-			unlink_if_exists("{$tmp}*");
-
-			// Flush any Domain/CNAME(s) entries in Unbound Resolver Cache
-			$domain_esc	= escapeshellarg($domain);
-			$domain_esc2	= escapeshellarg("www.{$domain}");
-
-			exec("{$pfb['chroot_cmd']} flush {$domain_esc} 2>&1");
-			exec("{$pfb['chroot_cmd']} flush {$domain_esc2} 2>&1");
-			if (!empty($cname_list)) {
-				foreach ($cname_list as $cname) {
-					$cname_esc = escapeshellarg($cname);
-					exec("{$pfb['chroot_cmd']} flush {$cname_esc} 2>&1");
-				}
+			if (!empty($cl_changed)) {
+				$savemsg .= gettext(' Also removed from DNSBL Group customlist(s): ') . implode(', ', array_keys($cl_changed)) . '.';
 			}
+
+			// ADR-06: the user whitelist is applied at QUERY TIME via the Python
+			// whiteDB. Refresh the whitelist input AND the manifest's
+			// config.user_whitelist so the next build's whiteDB un-blocks this domain.
+			pfb_unbound_python_whitelist('alerts');
+			pfb_unbound_python_sources_whitelist();
+			// ADR-10: #51 whitelist add is a block->allow DATA edit -> zero-downtime
+			// fast path (no restart). block->allow is immediate (blocks were never
+			// C-cached since #43).
+			pfb_reload_unbound('enabled', FALSE, TRUE);
 		}
 
 		// Save Domain/CNAME(s) to the TLD Exclusion customlist
@@ -1122,17 +1159,20 @@ if (isset($_POST) && !empty($_POST)) {
 			}
 			$savemsg .= gettext(" to the TLD Exclusion customlist.");
 
-			if (!isset($clists['tldexclusion']['data'][$domain])) {
+			if (!isset($clists['tld_wildcard_exclusion']['data'][$domain])) {
 				$data = '';
-				foreach ($clists['tldexclusion']['data'] as $line) {
+				foreach ($clists['tld_wildcard_exclusion']['data'] as $line) {
 					$data .= "{$line}";
 				}
 				$data .= "{$exclude_string}\r\n";
-				$clists['tldexclusion']['base64'] = base64_encode($data);
-				config_set_path("installedpackages/pfblockerngdnsblsettings/config/0/tldexclusion", $clists['tldexclusion']['base64']);
-				write_config("pfBlockerNG: Added [ {$domain} ] to DNSBL TLD Exclusion customlist.", false);
+				$clists['tld_wildcard_exclusion']['base64'] = pfb_text_area_encode($data);
+				PfbConfig::write('dnsbl/tld_wildcard_exclusion', $clists['tld_wildcard_exclusion']['base64']);
+				write_config("pfBlockerNG: Added [ {$domain} ] to DNSBL TLD Exclusion customlist.", FALSE);
 			}
 		}
+		// issue #2670: durable whitelist/TLD exclusion replaces the temporary unlock row.
+		$unlock_drop = pfb_alerts_whitelist_unlock_tokens($domain_unlock, $domain, $dnsbl_exclude, $cname_list);
+		$dnsbl_unlock = pfb_alerts_unlock_drop('dnsbl', $dnsbl_unlock, $unlock_drop);
 		header("Location: /pfblockerng/pfblockerng_alerts.php?savemsg={$savemsg}");
 		exit;
 	}
@@ -1141,12 +1181,19 @@ if (isset($_POST) && !empty($_POST)) {
 	elseif (isset($_POST['entry_delete']) && !empty($_POST['entry_delete'])) {
 
 		$entry = '';
+		$table = '';
+		// issue #1497: every case that reaches the $pfb_found gate below sets $type
+		// unconditionally before any read of it; this file-scope name used to be
+		// masked by the top-of-file ${"$type"} counter loop's leftover PHP
+		// foreach-variable-persists value, which the #1497 explicit-assignment
+		// rewrite removed. Same hand-crafted-only class as $table above.
+		$type = '';
 
-		// IPv4 validation
-		if ($entry = pfb_filter($_POST['domain'], PFB_FILTER_IPV4, 'alerts entry_delete', '', TRUE)) {
+		// IPv4/IPv6 validation
+		if ($entry = pfb_filter($_POST['domain'], PFB_FILTER_IP, 'alerts entry_delete', '', TRUE)) {
 			$table = pfb_filter($_POST['table'], PFB_FILTER_WORD, 'alerts entry_delete', '', TRUE);
 			if (empty($entry) || empty($table)) {
-				$savemsg = "IPv4: [ {$entry} ] Table name is not valid and IP cannot be removed !";
+				$savemsg = "IP: [ {$entry} ] Table name is not valid and IP cannot be removed !";
 				header("Location: /pfblockerng/pfblockerng_alerts.php?savemsg={$savemsg}");
 				exit;
 			}
@@ -1164,31 +1211,35 @@ if (isset($_POST) && !empty($_POST)) {
 
 		$pfb_found = TRUE;
 		$dnsbl_py_changes = FALSE;
+		$config_flushed = FALSE;
 
 		switch ($_POST['entry_delete']) {
 			case 'delete_domain':
 				$savemsg = "The Domain [ {$entry} ] has been deleted from the DNSBL Whitelist!";
 				if (isset($clists['dnsblwhitelist']['data'][$entry]) ||
-				    isset($clists['dnsblwhitelist']['data']['www' . $entry])) {
+				    isset($clists['dnsblwhitelist']['data']['www.' . $entry])) {
 
 					if (isset($clists['dnsblwhitelist']['data'][$entry])) {
 						unset($clists['dnsblwhitelist']['data'][$entry]);
 					}
 
-					if (isset($clists['dnsblwhitelist']['data']['www' . $entry])) {
-						unset($clists['dnsblwhitelist']['data']['www' . $entry]);
+					if (isset($clists['dnsblwhitelist']['data']['www.' . $entry])) {
+						unset($clists['dnsblwhitelist']['data']['www.' . $entry]);
 					}
 
-					if ($pfb['dnsbl_py_blacklist']) {
-						@file_put_contents($pfb['unbound_py_data'], ",{$entry},,1,,\n", FILE_APPEND);
-						$dnsbl_py_changes = TRUE;
-					} elseif ($pfb['dnsbl'] == 'on') {
-						$domain_esc = escapeshellarg($entry);
-						exec("{$pfb['chroot_cmd']} local_data {$domain_esc} '60 IN A {$pfb['dnsbl_vip4']}' 2>&1");
-					}
+					// ADR-06: re-blocking is driven by the whiteDB refresh below
+					// (gated on $dnsbl_py_changes); the legacy pfb_py_data write was
+					// dead (the resolver builds from the manifest, not that CSV).
+					$dnsbl_py_changes = TRUE;
 				}
 			case 'delete_domainwildcard':
 				$type = 'DNSBL Whitelist';
+				// $savemsg is always set below when this case is reached directly (the
+				// condition is a tautology on that path) or already set by the
+				// 'delete_domain' fallthrough above; PHPStan can't trace either
+				// correlation, so this coalesce is a runtime no-op that keeps the
+				// post-switch read provably defined.
+				$savemsg = $savemsg ?? '';
 				if ($_POST['entry_delete'] == 'delete_domainwildcard') {
 					$savemsg = "The Wildcard Domain [ .{$entry} ] has been deleted from the {$type} customlist!";
 					if (isset($clists['dnsblwhitelist']['data']['.' . $entry]) ||
@@ -1202,19 +1253,15 @@ if (isset($_POST) && !empty($_POST)) {
 							unset($clists['dnsblwhitelist']['data'][$entry]);
 						}
 
-						if ($pfb['dnsbl_py_blacklist']) {
-							@file_put_contents($pfb['unbound_py_zone'], ",{$entry},,1,,\n", FILE_APPEND);
-							$dnsbl_py_changes = TRUE;
-						} elseif ($pfb['dnsbl'] == 'on') {
-							$domain_esc = escapeshellarg($entry);
-							exec("{$pfb['chroot_cmd']} local_zone {$domain_esc} redirect 2>&1");
-							exec("{$pfb['chroot_cmd']} local_data {$domain_esc} '60 IN A {$pfb['dnsbl_vip4']}' 2>&1");
-						}
+						// ADR-06: re-blocking is driven by the whiteDB refresh below
+						// (gated on $dnsbl_py_changes); the legacy pfb_py_zone write
+						// was dead (the resolver builds from the manifest, not that CSV).
+						$dnsbl_py_changes = TRUE;
 					}
 				}
 
 				// Remove Domain from unlock file
-				pfb_unlock('lock', 'dnsbl', $entry, '', $dnsbl_unlock);
+				pfb_unlock('lock', 'dnsbl', $dnsbl_unlock, $entry, '');
 
 				$data = '';
 				foreach ($clists['dnsblwhitelist']['data'] as $line) {
@@ -1223,68 +1270,89 @@ if (isset($_POST) && !empty($_POST)) {
 						$data .= "{$line}";
 					}
 				}
-				$clists['dnsblwhitelist']['base64'] = base64_encode($data);
-				config_set_path("installedpackages/pfblockerngdnsblsettings/config/0/suppression", $clists['dnsblwhitelist']['base64']);
+				$clists['dnsblwhitelist']['base64'] = pfb_text_area_encode($data);
+				PfbConfig::write('dnsbl/whitelist', $clists['dnsblwhitelist']['base64']);
 				break;
 			case 'delete_exclusion':
 				$type = 'TLD Exclusion';
 				$savemsg = "The Domain [ {$entry} ] has been deleted from the {$type} customlist!";
-				if (isset($clists['tldexclusion']['data'][$entry])) {
-					unset($clists['tldexclusion']['data'][$entry]);
+				if (isset($clists['tld_wildcard_exclusion']['data'][$entry])) {
+					unset($clists['tld_wildcard_exclusion']['data'][$entry]);
 				}
 				$data = '';
-				foreach ($clists['tldexclusion']['data'] as $line) {
+				foreach ($clists['tld_wildcard_exclusion']['data'] as $line) {
 					$data .= "{$line}";
 				}
-				$clists['tldexclusion']['base64'] = base64_encode($data);
-				config_set_path("installedpackages/pfblockerngdnsblsettings/config/0/tldexclusion", $clists['tldexclusion']['base64']);
+				$clists['tld_wildcard_exclusion']['base64'] = pfb_text_area_encode($data);
+				PfbConfig::write('dnsbl/tld_wildcard_exclusion', $clists['tld_wildcard_exclusion']['base64']);
 				break;
 			case 'delete_ip':
-				$type	= 'IPv4 Suppression';
-				$ix	= ip_explode(trim($entry, "'"));	// Explode IP into evaluation strings
+				// ADR-53 un-suppress rework (#422): the old flow only understood an
+				// exact '/32' or a containing '/24' customlist entry and "healed" a
+				// legacy exploded /24 block by re-adding up to 254 sibling hosts.
+				// ADR-53 tables hold covering CIDRs, not sibling explosions, so that
+				// loop no longer applies -- re-adding the removed suppression entry
+				// itself restores exactly the coverage it carved out, any mask,
+				// either family; any pre-ADR-53 exploded state self-heals on the
+				// next reload (the persisted engines rebuild the canonical set).
+				$ip	= trim($entry, "'");
+				$is_v6	= strpos($ip, ':') !== FALSE;
+				$family	= $is_v6 ? 6 : 4;
+				$type	= "IPv{$family} Suppression";
 
-				// Check if IP has 255 single entries (User suppressed /32 for a /24 Blocked IP)
-				$pfb_pfctl = array();
-				$ip_esc = escapeshellarg("{$ix[6]}");
-				$ip_cnt = exec("{$pfb['pfctl']} -t {$table} -T show | {$pfb['grep']} {$ip_esc} | {$pfb['grep']} -c ^ 2>&1");
+				$supp_key	= $is_v6 ? 'ipsuppression_v6' : 'ipsuppression';
+				$cfg_key	= $is_v6 ? 'v6suppression' : 'v4suppression';	// bare -- blob index
+				$cfg_key_path	= $is_v6 ? 'ip/v6suppression' : 'ip/v4suppression';	// issue #1931: gateway key
 
-				$ip_revert = '';
-				// Remove /32 Suppressed IP in Suppression customlist and Re-Add /32 Blocked IP to Aliastable
-				if (isset($clists['ipsuppression']['data'][$ix[0] . '/32'])) {
-					unset($clists['ipsuppression']['data'][$ix[0] . '/32']);
+				// Longest-prefix pick: when both a '/32' and a broader entry cover
+				// the host, remove the most specific one -- deterministic, mirrors
+				// the old /32-before-/24 precedence.
+				$match = pfb_ip_suppressed_match($ip, array_keys($clists[$supp_key]['data']));
+				if ($match !== NULL) {
+					$was_held = isset($GLOBALS['pfb_feed_pass_lock']) && is_resource($GLOBALS['pfb_feed_pass_lock']);
+					$pfb_contended = FALSE;
+					if (!pfb_feed_pass_acquire($pfb_contended)) {
+						$pfb_found = FALSE;
+						$savemsg = $pfb_contended
+							? "Table [ {$table} ] is mid-update -- please retry removing [ {$match} ] from the {$type} customlist once the current run finishes."
+							: "Table [ {$table} ] could not be updated: the feed-pass lock could not be acquired -- see the pfBlockerNG log. Retrying will not clear this.";
+						break;
+					}
 
-					$ip_revert = escapeshellarg("{$ix[0]}/32");
-					exec("{$pfb['pfctl']} -t {$table} -T add {$ip_revert} 2>&1");
+					try {
+						// issue #1505: check the re-add before touching the customlist --
+						// a failed re-add must leave the suppression entry in place.
+						$apply = pfb_pfctl_checked_op($pfb['pfctl'], trim($table, "'"), 'add', $match);
+						if ($apply['ok']) {
+							unset($clists[$supp_key]['data'][$match]);
 
-					// Remove 0-255 IP address from aliastable excluding single entry
-					if ($ip_cnt >= 255) {
-						for ($k=0; $k <= 255; $k++) {
-							if ($k != $ix[4]) {
-								$ip_esc = escapeshellarg("{$ix[6]}{$k}");
-								exec("{$pfb['pfctl']} -t {$table} -T delete {$ip_esc} 2>&1");
+							$data = '';
+							foreach ($clists[$supp_key]['data'] as $line) {
+								$data .= "{$line}";
 							}
+							$clists[$supp_key]['base64'] = pfb_text_area_encode($data);
+							PfbConfig::write($cfg_key_path, $clists[$supp_key]['base64']);
+
+							// Keep pfbsuppression(_v6).txt in step with the config edit --
+							// same in-memory refresh the addsuppress handler applies.
+							$pfb['ipconfig'][$cfg_key] = $clists[$supp_key]['base64'];
+							pfb_create_suppression_file();
+							write_config("pfBlockerNG: Deleted [ {$entry} ] from {$type} customlist", FALSE);
+							$config_flushed = TRUE;
+
+							$savemsg = "Removed [ {$match} ] from {$type} customlist and re-added it back into the aliastable [ {$table} ]";
+						} else {
+							$pfb_found = FALSE;
+							$savemsg = "The re-add of [ {$match} ] into aliastable [ {$table} ] failed [ {$apply['fail']} ] -- the {$type} customlist entry was kept; see the pfBlockerNG log.";
+						}
+					} finally {
+						if (!$was_held) {
+							pfb_feed_pass_release();
 						}
 					}
 				}
-
-				// Remove /24 Suppressed IP in Suppression customlist and Re-Add /24 Blocked IP to Aliastable
-				elseif (isset($clists['ipsuppression']['data'][$ix[5]])) {
-					unset($clists['ipsuppression']['data'][$ix[5]]);
-
-					$ip_revert = escapeshellarg("{$ix[5]}");
-					exec("{$pfb['pfctl']} -t {$table} -T add {$ip_revert} 2>&1");
-				}
-
-				if (!empty($ip_revert)) {
-					$data = '';
-					foreach ($clists['ipsuppression']['data'] as $line) {
-						$data .= "{$line}";
-					}
-					$clists['ipsuppression']['base64'] = base64_encode($data);
-					config_set_path('installedpackages/pfblockerngipsettings/config/0/v4suppression', $clists['ipsuppression']['base64']);
-					$savemsg = "Removed [ {$ip_revert} ] from {$type} customlist and re-added it back into the aliastable [ {$table} ]";
-				}
 				else {
+					$pfb_found = FALSE;
 					$savemsg = "IP: [ {$entry} ] was not found in {$type} customlist!";
 				}
 				break;
@@ -1299,34 +1367,98 @@ if (isset($_POST) && !empty($_POST)) {
 				$ix	= ip_explode(trim($entry, "'"));	// Explode IP into evaluation strings
 
 				if (isset($clists['ipwhitelist' . $vtype][$table_2]['data'][$ix[0]])) {
-					unset($clists['ipwhitelist' . $vtype][$table_2]['data'][$ix[0]]);
-					exec("{$pfb['pfctl']} -t {$table} -T delete {$entry} 2>&1");
-
-					$data = '';
-					foreach ($clists['ipwhitelist' . $vtype][$table_2]['data'] as $line) {
-						$data .= "{$line}";
+					$was_held = isset($GLOBALS['pfb_feed_pass_lock']) && is_resource($GLOBALS['pfb_feed_pass_lock']);
+					$pfb_contended = FALSE;
+					if (!pfb_feed_pass_acquire($pfb_contended)) {
+						$pfb_found = FALSE;
+						$savemsg = $pfb_contended
+							? "Table [ {$table} ] is mid-update -- please retry deleting [ {$entry} ] from the {$type} customlist once the current run finishes."
+							: "Table [ {$table} ] could not be updated: the feed-pass lock could not be acquired -- see the pfBlockerNG log. Retrying will not clear this.";
+						break;
 					}
 
-					$clists['ipwhitelist' . $vtype][$table_2]['base64'] = base64_encode($data);
-					config_set_path("installedpackages/pfblockernglistsv{$vtype}/config/{$clists['ipwhitelist' . $vtype][$table_2]['base64_idx']}/custom", $clists['ipwhitelist' . $vtype][$table_2]['base64']);
-					$aname = substr(substr($table_2, 4),0, -3);					// Remove 'pfB_' and '_v4'
-					touch("{$pfb['permitdir']}/{$aname}_custom_v{$vtype}.update");			// Set Flag for Cron/Update process
-					$savemsg = "The IP [ {$entry} ] has been deleted from the [ {$table} ] Permit Alias customlist.";
+					try {
+						// issue #1505: check the delete before touching the customlist --
+						// a failed delete must leave the Permit entry in place.
+						$apply = pfb_pfctl_checked_op($pfb['pfctl'], $table_2, 'delete', trim($entry, "'"));
+						if ($apply['ok']) {
+							unset($clists['ipwhitelist' . $vtype][$table_2]['data'][$ix[0]]);
+
+							$data = '';
+							foreach ($clists['ipwhitelist' . $vtype][$table_2]['data'] as $line) {
+								$data .= "{$line}";
+							}
+
+							$clists['ipwhitelist' . $vtype][$table_2]['base64'] = pfb_text_area_encode($data);
+							// foreign structure: pfblockernglistsv4/v6/config/{row}/custom is a dynamic per-row key, not in registry
+							config_set_path("installedpackages/pfblockernglistsv{$vtype}/config/{$clists['ipwhitelist' . $vtype][$table_2]['base64_idx']}/custom", $clists['ipwhitelist' . $vtype][$table_2]['base64']);
+							$aname = substr(substr($table_2, 4),0, -3);					// Remove 'pfB_' and '_v4'
+							touch("{$pfb['permitdir']}/{$aname}_custom_v{$vtype}.update");			// Set Flag for Cron/Update process
+							write_config("pfBlockerNG: Deleted [ {$entry} ] from {$type} customlist", FALSE);
+							$config_flushed = TRUE;
+							$savemsg = "The IP [ {$entry} ] has been deleted from the [ {$table} ] Permit Alias customlist.";
+						} else {
+							$pfb_found = FALSE;
+							$savemsg = "The delete of [ {$entry} ] from aliastable [ {$table} ] failed [ {$apply['fail']} ] -- the {$type} customlist entry was kept; see the pfBlockerNG log.";
+						}
+					} finally {
+						if (!$was_held) {
+							pfb_feed_pass_release();
+						}
+					}
 				}
 				else {
+					$pfb_found = FALSE;
 					$savemsg = "IP: [ {$entry} ] was not found in {$type} customlist!";
 				}
 				break;
 			default:
 				$pfb_found = FALSE;
+				$savemsg = gettext('Cannot Delete this entry, invalid delete action.');
 				break;
 		}
 
-		if ($pfb_found) {
-			write_config("pfBlockerNG: Deleted [ {$entry} ] from {$type} customlist", false);
+		if ($pfb_found && !$config_flushed) {
+			write_config("pfBlockerNG: Deleted [ {$entry} ] from {$type} customlist", FALSE);
 			if ($dnsbl_py_changes) {
 				pfb_unbound_python_whitelist('alerts');
-				pfb_reload_unbound('enabled', FALSE);
+				pfb_unbound_python_sources_whitelist();
+				// ADR-10: whitelist removal is allow->block. Exact entries get one
+				// targeted flush; wildcard removal can affect an unknown set of cached
+				// subdomains, so flush the full cache after the applied-generation wait.
+				$swapped = pfb_reload_unbound('enabled', FALSE, TRUE);
+				if ($swapped) {
+					if ($_POST['entry_delete'] == 'delete_domainwildcard') {
+						// issue #2880: this flush rides resolver-control IPC inside the
+						// page request, and raw exec() waits unboundedly -- a hung
+						// unbound-control left the HTTP request without any terminal
+						// state. Reuse the CNAME lookup seam above (issue #2083):
+						// timeout(1) default reaper mode, 30s TERM budget + 5s kill
+						// grace matching the established Alerts DNS ceiling, output
+						// to a regular file with stdin on /dev/null so no descendant
+						// can hold the capture pipe, and an explicit status. Expiry
+						// (124) and nonzero control status must never read as an
+						// ordinary success: the wildcard removal is already persisted
+						// above, so both name the saved state and the next manual
+						// recovery action instead of rolling it back silently.
+						$flush_zone_file = "{$g['tmp_path']}/pfb_alerts_flush_zone_" . getmypid() . '_' . bin2hex(random_bytes(8));
+						$flush_zone_status = 0;
+						exec(escapeshellarg($pfb['timeout'] ?? '/usr/bin/timeout') .
+							" -s TERM -k 5 30 {$pfb['chroot_cmd']} flush_zone +c . > " .
+							escapeshellarg($flush_zone_file) . " 2>&1 < /dev/null",
+							$flush_zone_output, $flush_zone_status);
+						@unlink($flush_zone_file);
+						if ($flush_zone_status === 124) {
+							pfb_logger("\npfblockerng_alerts: wildcard-delete flush_zone TIMED OUT (killed); the whitelist edit was saved and stale cached subdomains may persist until the next resolver reload\n", 2);
+							$savemsg .= " The wildcard removal was saved, but the resolver cache flush TIMED OUT (killed after 30s) -- stale cached subdomains may persist until the next resolver reload; use 'Run Now' on 'Update' with 'Run Scope' set to 'DNSBL' and 'Force' set to 'Parse', or run 'unbound-control flush_zone' to clear them.";
+						} elseif ($flush_zone_status !== 0) {
+							pfb_logger("\npfblockerng_alerts: wildcard-delete flush_zone FAILED (exit {$flush_zone_status}); the whitelist edit was saved and stale cached subdomains may persist until the next resolver reload\n", 2);
+							$savemsg .= " The wildcard removal was saved, but the resolver cache flush FAILED (exit {$flush_zone_status}) -- stale cached subdomains may persist until the next resolver reload; use 'Run Now' on 'Update' with 'Run Scope' set to 'DNSBL' and 'Force' set to 'Parse', or run 'unbound-control flush_zone' to clear them.";
+						}
+					} else {
+						pfb_unbound_py_ccache_flush(array($entry));
+					}
+				}
 			}
 		}
 		header("Location: /pfblockerng/pfblockerng_alerts.php?savemsg={$savemsg}");
@@ -1339,15 +1471,7 @@ if (isset($_POST) && !empty($_POST)) {
 		$domain		= pfb_filter($_POST['domain'], PFB_FILTER_DOMAIN, 'alerts dnsbl_remove');
 		$dnsbl_type	= pfb_filter($_POST['dnsbl_type'], PFB_FILTER_WORD, 'alerts dnsbl_remove');
 
-		$domain_esc	= escapeshellarg($domain);
-
-		if (!empty($dnsbl_type)) {
-			if (strpos($dnsbl_type, 'TLD') !== FALSE) {
-				$dnsbl_type = 'TLD';
-			} elseif (strpos($dnsbl_type, 'DNSBL') !== FALSE) {
-				$dnsbl_type = 'DNSBL';
-			}
-		}
+		$action		= pfb_filter($_POST['dnsbl_remove'], PFB_FILTER_WORD, 'alerts dnsbl_remove');
 
 		// If Domain or DNSBL type field is empty, exit.
 		if (empty($domain) || empty($dnsbl_type)) {
@@ -1356,174 +1480,54 @@ if (isset($_POST) && !empty($_POST)) {
 			exit;
 		}
 
-		// For DNSBL python - Lock/unlock - Collect missing Feed/Group Name
-		if ($pfb['dnsbl_py_blacklist'] && $_POST['dnsbl_remove'] != 'unlock' && $dnsbl_type != 'python') {
-			$log_type = '1';
-			$pfb_feed = $pfb_group = 'Unknown';
-			if (file_exists("{$pfb['dnsbl_unlock']}.data")) {
-				$find_unlock_data = pfb_unlock('dnsbl_data', 'dnsbl_data', ",{$domain},,", '', '');
-				if (!empty($find_unlock_data)) {
-					$log_type	= $find_unlock_data[3] ?: 'Unknown';
-					$pfb_feed	= $find_unlock_data[4] ?: 'Unknown';
-					$pfb_group	= $find_unlock_data[5] ?: 'Unknown';
+		// ADR-06 (#51): DNSBL is built by Unbound's python plugin from the per-feed
+		// manifest; the legacy pfb_py_whitelist.txt/pfb_py_data/pfb_py_zone files this
+		// handler once wrote are not read on the manifest path (only pfb_unbound.py's
+		// legacy CSV fallback still loads them), so writing them was a no-op. Lock/Unlock
+		// now only toggles $pfb['dnsbl_unlock']; the resolver effect comes from
+		// regenerating the manifest's config.user_unlock from that store and reloading
+		// Unbound. Dispatch: pfb_dnsbl_unlock_action() (unit-tested); unknown action = no-op.
+		$ua = pfb_dnsbl_unlock_action($action);
+		if ($ua['mode'] !== '') {
+			pfb_unlock($ua['mode'], 'dnsbl', $dnsbl_unlock, $domain, $dnsbl_type);
+
+			// Patch the manifest's config.user_unlock from the updated store, then
+			// reload Unbound so the query-time whiteDB picks up the change.
+			pfb_unbound_python_sources_unlock();
+
+			// ADR-10: #51 Lock/Unlock is a user custom-list DATA edit -> zero-downtime
+			// fast path (no restart). pfb_dnsbl_unlock_action() collapses the four icons
+			// onto two store modes: 'lock' (lock/reunlock) REMOVES the domain from the
+			// unlock store -> it returns to feed-blocked = allow->block; 'unlock'
+			// (unlock/relock) ADDS it -> allowed = block->allow -> immediate, no flush
+			// (blocks were never C-cached since #43).
+			// The store toggle (re-lock on Force/Cron) is unchanged -- only the apply
+			// mechanism (swap, not restart) changed.
+			$swapped = pfb_reload_unbound('enabled', FALSE, TRUE);
+
+			if ($swapped) {
+				if ($ua['mode'] === 'lock') {
+					pfb_unbound_py_ccache_flush(array($domain));
 				}
 			}
 		}
 
-		// Unlock Domain
-		if ($_POST['dnsbl_remove'] == 'unlock') {
-			$cmd = 'local_data_remove';
-			$py_file = $pfb['unbound_py_data'];
-			if ($dnsbl_type == 'TLD') {
-				$cmd = 'local_zone_remove';
-				$py_file = $pfb['unbound_py_zone'];
-			}
-
-			if ($pfb['dnsbl_py_blacklist']) {
-				if ($dnsbl_type == 'python') {
-					@file_put_contents($pfb['unbound_py_wh'], "{$domain},0\n", FILE_APPEND | LOCK_EX);
-				}
-				else {
-					$tmp = tempnam('/tmp', 'dnsbl_alert_');
-					@file_put_contents("{$tmp}.adup", ",{$domain},,\n", LOCK_EX);
-					exec("{$pfb['ggrep']} -F -f " . escapeshellarg("{$tmp}.adup") . " {$py_file} >> {$pfb['dnsbl_unlock']}.data"); // Store DNSBL Feed/Group Data
-					exec("{$pfb['ggrep']} -vF -f " . escapeshellarg("{$tmp}.adup") . " {$py_file} > " . escapeshellarg("{$tmp}.tmp") . "; mv -f "
-						. escapeshellarg("{$tmp}.tmp") . " {$py_file}");
-					unlink_if_exists("{$tmp}*");
-				}
-				pfb_reload_unbound('enabled', FALSE);
-			} else {
-				exec("{$pfb['chroot_cmd']} {$cmd} {$domain_esc} 2>&1");
-			}
-
-			exec("{$pfb['chroot_cmd']} flush {$domain_esc} 2>&1");
-
-			// Query for CNAME(s)
-			if (!empty(pfb_filter($pfb['extdns'], PFB_FILTER_IP, 'alerts dnsbl_remove'))) {
-				$ext_dns = escapeshellarg("@{$pfb['extdns']}");
-				exec("/usr/bin/drill {$domain_esc} {$extdns} | /usr/bin/awk '/CNAME/ {sub(\"\.\$\", \"\", \$5); print \$5;}' 2>&1", $cname_list);
-				if (!empty($cname_list)) {
-					foreach ($cname_list as $cname) {
-						$cname = pfb_filter($cname, PFB_FILTER_DOMAIN, 'alerts dnsbl_remove', '', TRUE);
-						if (empty($cname)) {
-							continue;
-						}
-						exec("{$pfb['chroot_cmd']} flush {$cname} 2>&1");
-					}
-				}
-			}
-
-			// Add Domain to unlock file
-			pfb_unlock('unlock', 'dnsbl', $domain, $dnsbl_type, $dnsbl_unlock);
-			$savemsg = "The Domain [ {$domain} ] has been temporarily Unlocked from DNSBL!";
-		}
-
-		// Lock Domain
-		elseif ($_POST['dnsbl_remove'] == 'lock') {
-			if ($pfb['dnsbl_py_blacklist']) {
-				if ($dnsbl_type == 'python') {
-					pfb_unbound_python_whitelist('alerts');
-				}
-				else {
-					if ($dnsbl_type == 'TLD') {
-						$py_file = $pfb['unbound_py_zone'];
-					} else {
-						$py_file = $pfb['unbound_py_data'];
-					}
-
-					@file_put_contents($py_file, ",{$domain},,{$log_type},{$pfb_feed},{$pfb_group}\n", FILE_APPEND);
-				}
-				pfb_reload_unbound('enabled', FALSE);
-			}
-			elseif ($pfb['dnsbl'] == 'on') {
-
-				if ($dnsbl_type == 'TLD') {
-					exec("{$pfb['chroot_cmd']} local_zone {$domain_esc} redirect 2>&1");
-				}
-				exec("{$pfb['chroot_cmd']} local_data {$domain_esc} '60 IN A {$pfb['dnsbl_vip4']}' 2>&1");
-			}
-
-			// Remove Domain from unlock file
-			pfb_unlock('lock', 'dnsbl', $domain, $dnsbl_type, $dnsbl_unlock);
-			$savemsg = "The Domain [ {$domain} ] has been Locked into DNSBL!";
-		}
-		elseif ($_POST['dnsbl_remove'] == 'relock') {
-
-			if ($pfb['dnsbl_py_blacklist']) {
-				if ($dnsbl_type == 'python') {
-					pfb_unbound_python_whitelist('alerts');
-				}
-				else {
-					if ($dnsbl_type == 'TLD') {
-						$py_file = $pfb['unbound_py_zone'];
-					} else {
-						$py_file = $pfb['unbound_py_data'];
-					}
-					@file_put_contents($py_file, ",{$domain},,{$log_type},{$pfb_feed},{$pfb_group}\n", FILE_APPEND);
-				}
-				pfb_reload_unbound('enabled', FALSE);
-			}
-			elseif ($pfb['dnsbl'] == 'on') {
-
-				if ($dnsbl_type == 'TLD') {
-					exec("{$pfb['chroot_cmd']} local_zone {$domain_esc} redirect 2>&1");
-				}
-				exec("{$pfb['chroot_cmd']} local_data {$domain_esc} '60 IN A {$pfb['dnsbl_vip4']}' 2>&1");
-			}
-
-			// Add Domain to unlock file
-			pfb_unlock('unlock', 'dnsbl', $domain, $dnsbl_type, $dnsbl_unlock);
-			$savemsg = "The Domain [ {$domain} ] has been temporarily Re-Locked into DNSBL!";
-		}
-		elseif ($_POST['dnsbl_remove'] == 'reunlock') {
-
-			if ($pfb['dnsbl_py_blacklist']) {
-				if ($dnsbl_type == 'python') {
-					pfb_unbound_python_whitelist('alerts');
-				}
-				else {
-					if ($dnsbl_type == 'TLD') {
-						$py_file = $pfb['unbound_py_zone'];
-					} else {
-						$py_file = $pfb['unbound_py_data'];
-					}
-					@file_put_contents($py_file, ",{$domain},,{$log_type},{$pfb_feed},{$pfb_group}\n", FILE_APPEND);
-				}
-				pfb_reload_unbound('enabled', FALSE);
-			}
-			else {
-				$cmd = 'local_data_remove';
-				if ($dnsbl_type == 'TLD') {
-					$cmd = 'local_zone_remove';
-				}
-				exec("{$pfb['chroot_cmd']} {$cmd} {$domain_esc} 2>&1");
-				exec("{$pfb['chroot_cmd']} flush {$domain_esc} 2>&1");
-			}
-
-			// Remove Domain from unlock file
-			pfb_unlock('lock', 'dnsbl', $domain, $dnsbl_type, $dnsbl_unlock);
-			$savemsg = "The Domain [ {$domain} ] has been Unlocked from DNSBL!";
-		}
+		// sprintf with the (domain-filtered, so '%'-free) name; an unknown action's
+		// empty 'msg' yields an empty savemsg.
+		$savemsg = sprintf($ua['msg'], $domain);
 		header("Location: /pfblockerng/pfblockerng_alerts.php?savemsg={$savemsg}");
 		exit;
 	}
 
-	// Unlock/Lock IP events
+	// Unlock/Lock IP events -- ADR-53 parity (#1412): the icon now posts the
+	// EXACT alerted host (never a feed CIDR), same shape the Suppression "+"
+	// already posts, so a single PFB_FILTER_IP call replaces the old v4-only,
+	// /24-/32-only split-capture regex; any CIDR-shaped or otherwise invalid
+	// $_POST['ip'] (either family) is rejected by is_ipaddr() outright.
 	elseif (isset($_POST['ip_remove']) && !empty($_POST['ip_remove'])) {
 
-		$ip = '';
-		if (strpos($_POST['ip'], '/') !== FALSE) {
-			if (is_string($_POST['ip']) && preg_match('/^(?:([0-9.]{7,15})|([0-9a-f:]{2,39}|[0-9a-f:]{2,30}[0-9.]{7,15}))\/(\d{1,3})$/i', $_POST['ip'], $parts)) {
-				$ip = pfb_filter($parts[1], PFB_FILTER_IP, 'alerts ip_remove');
-				if (empty($ip) || (count($parts) != 4) || ($parts[3] < 24) || ($parts[3] > 32)) {
-					$ip = '';
-				}
-			}
-		}
-		else {
-			$ip = pfb_filter($_POST['ip'], PFB_FILTER_IP, 'alerts ip_remove');
-		}
-		$table = pfb_filter($_POST['table'], PFB_FILTER_WORD, 'alerts ip_remove');
+		$ip	= pfb_filter($_POST['ip'], PFB_FILTER_IP, 'alerts ip_remove');
+		$table	= pfb_filter($_POST['table'], PFB_FILTER_WORD, 'alerts ip_remove');
 
 		// If IP or table field is empty, exit.
 		if (empty($ip) || empty($table)) {
@@ -1532,25 +1536,16 @@ if (isset($_POST) && !empty($_POST)) {
 			exit;
 		}
 
-		$ip_esc		= escapeshellarg($ip);
-		$table_esc	= escapeshellarg($table);
-
-		// Unlock IP
-		if ($_POST['ip_remove'] == 'unlock') {
-			exec("{$pfb['pfctl']} -t {$table_esc} -T delete {$ip_esc} 2>&1");
-			pfb_unlock('unlock', 'ip', $ip, $table, $ip_unlock);
-			$savemsg = "The IP [ {$ip} ] has been temporarily Unlocked from table [ {$table} ]!";
+		$ip_remove_action = NULL;
+		if (is_string($_POST['ip_remove']) &&
+		    ($_POST['ip_remove'] === 'unlock' || $_POST['ip_remove'] === 'lock')) {
+			$ip_remove_action = $_POST['ip_remove'];
 		}
-
-		// Lock IP
-		elseif ($_POST['ip_remove'] == 'lock') {
-			exec("{$pfb['pfctl']} -t {$table_esc} -T add {$ip_esc} 2>&1");
-			pfb_unlock('lock', 'ip', $ip, $table, $ip_unlock);
-			$savemsg = "The IP [ {$ip} ] has been re-locked into table [ {$table} ]!";
+		$result = pfb_alerts_ip_action($ip_remove_action, $ip, $table, '', $clists, $ip_unlock);
+		if ($result['redirect']) {
+			header("Location: /pfblockerng/pfblockerng_alerts.php?savemsg={$result['savemsg']}");
+			exit;
 		}
-
-		header("Location: /pfblockerng/pfblockerng_alerts.php?savemsg={$savemsg}");
-		exit;
 	}
 
 	// Whitelist IP events
@@ -1577,42 +1572,15 @@ if (isset($_POST) && !empty($_POST)) {
 		}
 
 		// Create new IP Whitelist Alias
-		if (substr($table, 0, 4) == 'NEW_') {
+		if (str_starts_with($table, 'NEW_')) {
 			$table = substr($table, 4);
 			header("Location: /pfblockerng/pfblockerng_category_edit.php?type=ipv{$vtype}&act=addgroup&atype=Whitelist|{$ip}|{$descr}#Customlist");
 			exit;
 		}
 
-		$ip_esc		= escapeshellarg($ip);
-		$table_esc	= escapeshellarg($table);
-
-		if (!isset($clists['ipwhitelist' . $vtype][$table]['data'][$ip])) {
-			exec("{$pfb['pfctl']} -t {$table_esc} -T add {$ip_esc} 2>&1");
-			@file_put_contents("{$pfb['aliasdir']}/{$table}.txt", "\n{$ip}", LOCK_EX);
-
-			if (!empty($descr)) {
-				$whitelist_string = "{$ip} # {$descr}\r\n";
-			} else {
-				$whitelist_string = "{$ip}\r\n";
-			}
-
-			$data = '';
-			if (isset($clists['ipwhitelist' . $vtype][$table]['data']) && is_array($clists['ipwhitelist' . $vtype][$table]['data'])) {
-				foreach ($clists['ipwhitelist' . $vtype][$table]['data'] as $line) {
-					$data .= "{$line}";
-				}
-			}
-			$data .= "{$whitelist_string}";
-
-			$clists['ipwhitelist' . $vtype][$table]['base64'] = base64_encode($data);
-			config_set_path("installedpackages/pfblockernglistsv{$vtype}/config/{$clists['ipwhitelist' . $vtype][$table]['base64_idx']}/custom", $clists['ipwhitelist' . $vtype][$table]['base64']);
-			write_config("pfBlockerNG: Added [ {$ip} ] to [ {$table} ] Whitelist", false);
-
-			$aname = substr(substr($table, 4),0, -3);					// Remove 'pfB_' and '_v4'
-			touch("{$pfb['permitdir']}/{$aname}_custom_v{$vtype}.update");			// Set Flag for Cron/Update process
-
-			$savemsg = "The IP [ {$ip} ] has been added to the [ {$table} ] Permit Alias customlist.";
-			header("Location: /pfblockerng/pfblockerng_alerts.php?savemsg={$savemsg}");
+		$result = pfb_alerts_ip_action('ip_white', $ip, $table, $descr, $clists, $ip_unlock);
+		if ($result['redirect']) {
+			header("Location: /pfblockerng/pfblockerng_alerts.php?savemsg={$result['savemsg']}");
 			exit;
 		}
 	}
@@ -1712,16 +1680,9 @@ if ($pfb['filterlogentries']) {
 // Define common variables and arrays for report tables
 $continents	= array_flip(array('pfB_Africa', 'pfB_Antarctica', 'pfB_Asia', 'pfB_Europe', 'pfB_NAmerica', 'pfB_Oceania', 'pfB_SAmerica', 'pfB_Top'));
 
-$supp_ip_txt	= "Clicking this Suppression Icon, will immediately remove the block."
-		. "\n\nNote:"
-		. "\n1) The Host will be added to the IPv4 Suppression custom list."
-		. "\n2) Only 32 or 24 CIDR IPs can be suppressed with the '+' icon."
-		. "\n3) Suppressing a /32 CIDR is better than suppressing the full /24"
-		. "\n4) Manual entries to the 'IPv4 Suppression' custom list will not immediately remove existing blocked hosts"
-		. "\n&emsp;and will require a Force Reload to remove the blocked hosts.";
-
 // Collect Interfaces
 $dnsbl_int = array();
+// foreign section: interfaces is a pfSense core section, not in registry
 foreach (config_get_path('interfaces', []) as $int) {
 	if ($int['ipaddr'] != 'dhcp' && !empty($int['ipaddr']) && !empty($int['subnet'])) {
 		$dnsbl_int[] = array("{$int['ipaddr']}/{$int['subnet']}", "{$int['descr']}");
@@ -1782,11 +1743,24 @@ if ($alert_summary) {
 					'ipasn'		=> 20);
 	}
 
+	// issue #1814 follow-up: BSD cut/sort/uniq (the pfSense/FreeBSD guest's
+	// userland) ABORT with "Illegal byte sequence" on an invalid-UTF-8 byte
+	// when the process locale is UTF-8 (pfSense's default) -- silently losing
+	// EVERY row in the whole stat/chart panel, not just the one bad row.
+	// LC_ALL=C forces byte-safe processing; the `export` form (not a leading
+	// `VAR=x cmd`, which only binds the first pipeline member) is required so
+	// every stage of the exec() pipeline sees it.
+	$lc_bytes	= 'LC_ALL=C; export LC_ALL; ';
 	$su_cmd		= "sort | uniq -c";
 	$grep_cmd	= "{$pfb['grep']} -v";
 	$sss_cmd	= "sort | uniq -c | {$pfb['sed']} 's/^ *//' | sort -nr";
 
-	$chart_cmd = "awk '{\$1=\$1} 1' | awk -F ' ' '{print \$2 \" \" \$3 \" \(\" \$4 \"\),\" \$1}' >> /usr/local/www/pfblockerng/chart_stats.csv";
+	// dnsbl.log/ip logs' date field is now ISO ('Y-m-d H:i:s', one space token
+	// before the hour), so the label is date+"("+hour+")" -- one fewer field
+	// than the old 3-token 'M j H:i:s' shape this pipeline used to assume.
+	// issue #1009: keep the parens UNescaped -- awk string literals need no
+	// paren escaping, and mawk prints a literal `\(` where gawk/onetrueawk strip it.
+	$chart_cmd = "awk '{\$1=\$1} 1' | awk -F ' ' '{print \$2 \" (\" \$3 \"),\" \$1}' >> /usr/local/www/pfblockerng/chart_stats.csv";
 
 	$alert_stats = array();
 	$alert_stats[$alert_view] = array();
@@ -1808,6 +1782,16 @@ if ($alert_summary) {
 		$stat_hidden = array_flip($stat_hidden);
 	}
 
+	// Total entry count for this view is constant across every $stat_info
+	// iteration (the log doesn't change mid-loop), so compute it once here
+	// instead of once per iteration (issue #809). The per-iteration assignment
+	// below stays IN the loop body -- if every stat type is hidden the loop body
+	// never runs, so $alert_stats['count'] must stay unset for this view exactly
+	// as it does today.
+	// issue #1261: display-only total -- NULL (read failure) -> 0, same as the
+	// exec()-era `?: 0` fallback (a legitimately-empty file also yields 0).
+	$alert_log_total_count = file_exists($alert_log) ? (pfb_count_lines($alert_log) ?? 0) : 0;
+
 	foreach ($stat_info as $stat_type => $column) {
 		if (isset($stat_hidden[$stat_type])) {
 			continue;
@@ -1820,7 +1804,7 @@ if ($alert_summary) {
 			if ($alert_view != 'dnsbl_stat') {
 				$unknown_msg = 'Unknown';
 			} else {
-				$unknown_msg = $pfb['dnsbl_py_blacklist'] ? 'DNSBL Webserver/VIP' : 'Not available for HTTPS alerts';
+				$unknown_msg = pfb_dnsbl_mechanism_labels()['enabled'];
 			}
 
 			$agent_cmd = '';
@@ -1833,60 +1817,76 @@ if ($alert_summary) {
 				case 'ipdate':
 				case 'dnsbldate':
 				case 'replydate':
-					exec("{$cut_cmd} {$alert_log} | cut -d ' ' -f1-2 | uniq -c 2>&1", $stats);
+					// ISO date/time has 1 space token (not the old 3-token
+					// 'M j H:i:s'); the day bucket is the date field alone.
+					// issue #1057: grep skips pre-ISO legacy lines (no digit-year prefix).
+					exec("{$lc_bytes}{$cut_cmd} {$alert_log} | {$pfb['grep']} -E '^[0-9]{4}-' | cut -d ' ' -f1 | uniq -c 2>&1", $stats);
 					$stats = array_reverse($stats);
 					break;
 				case 'dnsbldatehr':
-					exec("{$cut_cmd} {$alert_log} | cut -d ':' -f1 | sort | uniq -c | sort -nr 2>&1", $stats);
+					// issue #1057: grep skips pre-ISO legacy lines (no digit-year prefix).
+					exec("{$lc_bytes}{$cut_cmd} {$alert_log} | {$pfb['grep']} -E '^[0-9]{4}-' | cut -d ':' -f1 | sort | uniq -c | sort -nr 2>&1", $stats);
 					break;
 				case 'dnsbldatehrmin':
-					exec("{$cut_cmd} {$alert_log} | cut -d ':' -f1,2 | sort | uniq -c | sort -nr 2>&1", $stats);
+					// issue #1057: grep skips pre-ISO legacy lines (no digit-year prefix).
+					exec("{$lc_bytes}{$cut_cmd} {$alert_log} | {$pfb['grep']} -E '^[0-9]{4}-' | cut -d ':' -f1,2 | sort | uniq -c | sort -nr 2>&1", $stats);
 					break;
 				case 'dnsblchart':
 				case 'replychart':
 				case 'ipchart':
-					exec("echo 'edate,ecount' > /usr/local/www/pfblockerng/chart_stats.csv");
-					exec("{$cut_cmd} {$alert_log} | cut -d ':' -f1 | uniq -c | {$chart_cmd} 2>&1");
+					exec("{$lc_bytes}echo 'edate,ecount' > /usr/local/www/pfblockerng/chart_stats.csv");
+					exec("{$lc_bytes}{$cut_cmd} {$alert_log} | cut -d ':' -f1 | uniq -c | {$chart_cmd} 2>&1");
 					break;
 				case 'ipsrcipin':
-					exec("{$cut_cmd},13,14,18 {$alert_log} | {$grep_cmd} ',out,' | {$sss_cmd} | {$pfb['sed']} 's/,in,/,/' 2>&1", $stats);
+					exec("{$lc_bytes}{$cut_cmd},13,14,18 {$alert_log} | {$grep_cmd} ',out,' | {$sss_cmd} | {$pfb['sed']} 's/,in,/,/' 2>&1", $stats);
 					break;
 				case 'ipsrcipout':
-					exec("{$cut_cmd},13,14 {$alert_log} | {$grep_cmd} ',in,' | {$sss_cmd} | {$pfb['sed']} 's/,out,/,/' 2>&1", $stats);
+					exec("{$lc_bytes}{$cut_cmd},13,14 {$alert_log} | {$grep_cmd} ',in,' | {$sss_cmd} | {$pfb['sed']} 's/,out,/,/' 2>&1", $stats);
  					break;
 				case 'ipdstipin':
-					exec("{$cut_cmd},13,14 {$alert_log} | {$grep_cmd} ',out,' | {$sss_cmd} | {$pfb['sed']} 's/,in,/,/' 2>&1", $stats);
+					exec("{$lc_bytes}{$cut_cmd},13,14 {$alert_log} | {$grep_cmd} ',out,' | {$sss_cmd} | {$pfb['sed']} 's/,in,/,/' 2>&1", $stats);
 					break;
 				case 'ipdstipout':
-					exec("{$cut_cmd},13,14,18 {$alert_log} | {$grep_cmd} ',in,' | {$sss_cmd} | {$pfb['sed']} 's/,out,/,/' 2>&1", $stats);
+					exec("{$lc_bytes}{$cut_cmd},13,14,18 {$alert_log} | {$grep_cmd} ',in,' | {$sss_cmd} | {$pfb['sed']} 's/,out,/,/' 2>&1", $stats);
 					break;
 				case 'dnsbltld':
 				case 'replytld':
-					exec("{$cut_cmd} {$alert_log} | awk -F. 'NF>1' | rev | cut -d '.' -f1 | rev | sort | uniq -c | sort -nr 2>&1", $stats);
+					exec("{$lc_bytes}{$cut_cmd} {$alert_log} | awk -F. 'NF>1' | rev | cut -d '.' -f1 | rev | sort | uniq -c | sort -nr 2>&1", $stats);
 					break;
 				case 'replytld2':
-					exec("{$cut_cmd} {$alert_log} | rev | cut -d '.' -f1,2 | awk -F. 'NF>1' | rev | sort | uniq -c | sort -nr 2>&1", $stats);
+					exec("{$lc_bytes}{$cut_cmd} {$alert_log} | rev | cut -d '.' -f1,2 | awk -F. 'NF>1' | rev | sort | uniq -c | sort -nr 2>&1", $stats);
 					break;
 				case 'replytld3':
-					exec("{$cut_cmd} {$alert_log} | rev | cut -d '.' -f1,2,3 | awk -F. 'NF>2' | rev | sort | uniq -c | sort -nr 2>&1", $stats);
+					exec("{$lc_bytes}{$cut_cmd} {$alert_log} | rev | cut -d '.' -f1,2,3 | awk -F. 'NF>2' | rev | sort | uniq -c | sort -nr 2>&1", $stats);
 					break;
 				case 'ipsrcport':
-					exec("{$cut_cmd} {$alert_log} | {$su_cmd} | {$pfb['awk']} -F ' ' '\$2 <= 1024 || \$2 ~ /[a-zA-Z]/' | sort -nr 2>&1", $stats);
+					exec("{$lc_bytes}{$cut_cmd} {$alert_log} | {$su_cmd} | {$pfb['awk']} -F ' ' '\$2 <= 1024 || \$2 ~ /[a-zA-Z]/' | sort -nr 2>&1", $stats);
 					break;
 				case 'replyttl':
-					exec("{$cut_cmd} {$alert_log} | {$pfb['grep']} -v ',cache,' | {$su_cmd} | sort -nr 2>&1", $stats);
+					exec("{$lc_bytes}{$cut_cmd} {$alert_log} | {$pfb['grep']} -v ',cache,' | {$su_cmd} | sort -nr 2>&1", $stats);
 					break;
 				case 'dnsbldomain':
-					exec("{$cut_cmd},6 {$alert_log} | {$su_cmd} | sort -nr 2>&1", $stats);
+					exec("{$lc_bytes}{$cut_cmd},6 {$alert_log} | {$su_cmd} | sort -nr 2>&1", $stats);
 					break;
 				case 'dnsblevald':
-					exec("{$cut_cmd},6 {$alert_log} | {$pfb['grep']} 'TLD' | {$su_cmd} | sort -nr 2>&1", $stats);
+					exec("{$lc_bytes}{$cut_cmd},6 {$alert_log} | {$pfb['grep']} 'TLD' | {$su_cmd} | sort -nr 2>&1", $stats);
 					break;
 				case 'replysrcipd':
-					exec("{$cut_cmd},8 {$alert_log} | {$su_cmd} | sort -nr 2>&1", $stats);
+					exec("{$lc_bytes}{$cut_cmd},8 {$alert_log} | {$su_cmd} | sort -nr 2>&1", $stats);
+					break;
+				case 'ipasn':
+					// issue #1369 (ADR-38 Amendment 3): no back-compat for log entries --
+					// only the new 23-field schema carries a plain ASN token at column 20
+					// (unchanged position: the 2 new columns were appended AFTER it). A
+					// pre-upgrade 21-field legacy row's column 20 is still the old
+					// pipe-blob text, and any other field count is malformed either way --
+					// gate on the exact new field count before extracting, so a legacy/
+					// malformed row is skipped silently instead of polluting the Top ASN
+					// count with blob noise.
+					exec("{$lc_bytes}{$pfb['awk']} -F',' 'NF == 23' {$alert_log} | {$cut_cmd} | {$agent_cmd} {$su_cmd} | sort -nr 2>&1", $stats);
 					break;
 				default:
-					exec("{$cut_cmd} {$alert_log} | {$agent_cmd} {$su_cmd} | sort -nr 2>&1", $stats);
+					exec("{$lc_bytes}{$cut_cmd} {$alert_log} | {$agent_cmd} {$su_cmd} | sort -nr 2>&1", $stats);
 					break;
 			}
 
@@ -1900,7 +1900,9 @@ if ($alert_summary) {
 					}
 
 					$data = array_map('trim', explode(' ', trim($line), 2));
-					$alert_stats[$alert_view][$stat_type][$data[1] ?: $unknown_msg] = $data[0] ?: 0;
+					// issue #1792: a stat label of literally '0' is a real
+					// label -- only a MISSING/empty field reads "Unknown".
+					$alert_stats[$alert_view][$stat_type][pfb_is_empty($data[1] ?? NULL) ? $unknown_msg : $data[1]] = (int) $data[0];
 				}
 			}
 			else {
@@ -1910,7 +1912,10 @@ if ($alert_summary) {
 					$alert_stats[$alert_view]['dnsblgpblock'] = array();
 				}
 			}
-			$alert_stats['count'][$alert_view] = exec("{$pfb['grep']} -c ^ {$alert_log} 2>&1") ?: 0;
+			// The exec is hoisted above the loop (issue #809); this assignment
+			// stays here so an all-hidden $stat_info leaves $alert_stats['count']
+			// unset for this view, exactly as before.
+			$alert_stats['count'][$alert_view] = $alert_log_total_count;
 		}
 		else {
 			$alert_stats[$alert_view][$stat_type]	= array();
@@ -1921,7 +1926,7 @@ if ($alert_summary) {
 			}
 
 			if ($stat_type == 'dnsblchart' || $stat_type == 'replychart' || $stat_type == 'ipchart') {
-				exec("echo 'edate,ecount' > /usr/local/www/pfblockerng/chart_stats.csv");
+				exec("{$lc_bytes}echo 'edate,ecount' > /usr/local/www/pfblockerng/chart_stats.csv");
 			}
 		}
 	}
@@ -1961,6 +1966,78 @@ if ($alert_summary) {
 }
 
 
+// HTML-encode a log/host-derived data token before it is folded into the
+// Alerts/Reports table markup. Every value that originates from a parsed log
+// line, a resolved/DHCP hostname, or an IDN conversion must pass through this
+// at the point it enters cell markup, so HTML metacharacters render as text
+// (the intentional static markup around it stays unencoded).
+function pfb_hsc($value) {
+	// ENT_SUBSTITUTE: without it, ANY invalid-UTF-8 byte anywhere in $value makes
+	// htmlspecialchars() return '' -- blanking the WHOLE string, not just the offending
+	// byte (issue #1814). With it, the invalid byte alone is replaced with U+FFFD and the
+	// rest of the value still renders.
+	$encoded = htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+	// Unicode bidirectional controls survive HTML encoding -- they are not metacharacters --
+	// and reverse the display order of everything after them, so a log-derived domain, feed
+	// name or hostname can render as something other than the bytes actually logged
+	// (issue #2041). Config text never reaches here carrying one: pfb_sanitize_text() strips
+	// \p{C} at the persist boundary (issue #1723). Log-derived values have no such gate.
+	//
+	// Stripped AFTER encoding, not before: ENT_SUBSTITUTE guarantees its output is valid
+	// UTF-8, and preg_replace()'s /u modifier returns NULL on invalid input -- stripping
+	// first would hand that NULL straight into the cell for exactly the malformed values
+	// #1814 exists to keep rendering. No entity htmlspecialchars() emits is in this set, so
+	// running after it cannot corrupt one.
+	//
+	// Only the bidi set, not all of \p{C}: this is the encode chokepoint for every Alerts
+	// and Reports cell, and \p{C} would also take newlines and tabs out of values that may
+	// legitimately carry them.
+	// The marks (U+061C, U+200E, U+200F), the embedding/override set (U+202A-U+202E) and
+	// the isolates (U+2066-U+2069). None carry textual content.
+	$stripped = preg_replace('/[\x{061C}\x{200E}\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}]/u', '', $encoded);
+
+	return $stripped === NULL ? $encoded : $stripped;
+}
+
+// Truncate a RAW log/host-derived token to $length CHARACTERS (never bytes), so a
+// multibyte character straddling the cut survives whole instead of leaving a
+// dangling lead byte for pfb_hsc()'s ENT_SUBSTITUTE to replace (issue #1815). An
+// invalid byte within the kept prefix is still replaced with U+FFFD -- the same
+// symbol pfb_hsc()'s ENT_SUBSTITUTE produces (issue #1814) -- by pinning
+// mb_substitute_character() for the duration of the call; mb_substr()'s own
+// default substitute ('?') would otherwise fabricate a character the input never
+// carried. mb_substitute_character() is request-global state, so the prior value
+// is restored on every exit path -- the finally is what makes that true for a
+// throwing $value cast as well as the normal return.
+function pfb_truncate($value, $length) {
+	$prev = mb_substitute_character();
+	mb_substitute_character(0xFFFD);
+	try {
+		return mb_substr((string) $value, 0, $length, 'UTF-8');
+	} finally {
+		mb_substitute_character($prev);
+	}
+}
+
+// Compose the resolved-hostname stats cell for the IP src/dst-in stats. The raw
+// hostname is attacker-influenceable, so HTML-encode it; a >45-char value is
+// truncated for display with the full value kept in the title attribute.
+// issue #1069: truncate the RAW value THEN encode -- encoding first then substr()
+// can split a named entity (&quot; -> &qu) or a multibyte char.
+function pfb_stat_hostname_cell($resolved) {
+	$resolved = (string) $resolved;
+	$full = pfb_hsc($resolved);
+	if (mb_strlen($resolved, 'UTF-8') > 45) {
+		$title = "title=\"{$full}\"";
+		$cell  = pfb_hsc(pfb_truncate($resolved, 45)) . "<small>...</small>";
+	} else {
+		$title = '';
+		$cell  = $full;
+	}
+	return "<br /><span {$title}><small>{$cell}</small></span>";
+}
+
 // Function to Filter Alerts report on user defined input
 function pfb_match_filter_field($flent, $fields) {
 
@@ -1968,7 +2045,7 @@ function pfb_match_filter_field($flent, $fields) {
 		foreach ($fields as $key => $field) {
 
 			$not_filter = FALSE;
-			if (substr($field, 0, 1) == '!') {
+			if (str_starts_with($field, '!')) {
 				$not_filter = TRUE;
 				$field = substr($field, 1);
 			}
@@ -2002,6 +2079,18 @@ function pfb_match_filter_field($flent, $fields) {
 	return TRUE;
 }
 
+/* Render-time attribution model (docs/misc/alerts-reports-pipeline.md; perf: issue #809)
+
+   The logs already carry full event-time attribution: pfb_unbound.py writes the DNSBL/
+   DNS-reply verdicts, and the filterlog daemon (pfb_daemon_filterlog) resolves the bare
+   pf event into rule/feed/GeoIP/rDNS/ASN once, at event time, caching in its ipcache.
+   DNSBL rows therefore render their logged fields directly — no render-time lookup.
+   Issue #1349 removed the retired per-row re-check and drill machinery. Only
+   the IP converter still re-checks the logged attribution against the CURRENT feed state
+   (drift strikethrough + icon decisions): the issue #809 batched pfb_ip_prefetch() pass seeds
+   in-process memos to cut per-row execs, but has no PERSISTENT cache (ipcache is daemon-write-
+   only, never read here). See the doc before changing lookup ordering or caching here. */
+
 // Function to collect DNSBL Log event details based on Blocking mode field
 function dnsbl_log_details($fields) {
 	global $clists;
@@ -2018,7 +2107,7 @@ function dnsbl_log_details($fields) {
 	}
 	if (strpos($fields[5], 'Python') !== FALSE) {
 		$isPython	= TRUE;
-		$pfb_python	= "&nbsp;<i class=\"fa-solid fa-bolt\" title=\"{$fields[5]}\"></i>";
+		$pfb_python	= "&nbsp;<i class=\"fa-solid fa-bolt\" title=\"" . pfb_hsc($fields[5]) . "\"></i>";
 	}
 
 	// Select blocked Domain or Evaluated Domain
@@ -2028,8 +2117,8 @@ function dnsbl_log_details($fields) {
 	}
 
 	// Determine if blocked Domain is a TLD Exclusion
-	if ($isTLD && isset($clists['tldexclusion']['data'][$fields[7]])) {
-		$wt_line = rtrim($clists['tldexclusion']['data'][$fields[7]], "\x00..\x1F");
+	if ($isTLD && isset($clists['tld_wildcard_exclusion']['data'][$fields[7]])) {
+		$wt_line = rtrim($clists['tld_wildcard_exclusion']['data'][$fields[7]], "\x00..\x1F");
 		$isExclusion = TRUE;
 	}
 
@@ -2043,56 +2132,54 @@ function dnsbl_whitelist_type($fields, $clists, $isExclusion, $isTLD, $qdomain) 
 
 	$isWhitelist_found = FALSE;
 
+	// HTML-encoded copies of the log-derived tokens that get folded into the
+	// title/id/href markup below (the raw values are still used for lookups).
+	$h_f2		= pfb_hsc($fields[2]);
+	$h_f6		= pfb_hsc($fields[6]);
+	$h_f7		= pfb_hsc($fields[7]);
+	$h_f8		= pfb_hsc($fields[8]);
+	$h_qdomain	= pfb_hsc($qdomain);
+
 	$ex_dom = $s_txt = '';
 	if ($isExclusion) {
-		$wt_line = rtrim(array_get_path($clists, "tldexclusion/data/{$fields[7]}", ''), "\x00..\x1F");
+		$wt_line = rtrim(array_get_path($clists, "tld_wildcard_exclusion/data/{$fields[7]}", ''), "\x00..\x1F");
+		$h_wt_line = pfb_hsc($wt_line);
 		$s_txt  = "Note:&emsp;The following Domain is in the TLD Exclusion customlist:\n\n"
-			. "TLD Exclusion:&emsp;[ {$wt_line} ]\n\n"
-			. "&#8226; TLD Exclusions require a Force Reload when a Domain is initially added.\n"
+			. "TLD Exclusion:&emsp;[ {$h_wt_line} ]\n\n"
+			. "&#8226; A Domain newly added to TLD Exclusion takes effect at the next DNSBL update: use 'Run Now' on 'Update' with 'Run Scope' set to 'DNSBL' or 'Both'.\n"
 			. "&#8226; To remove this Domain from the TLD Exclusion customlist, Click 'OK'";
 
 		$ex_dom = '&nbsp;<i class="fa-regular fa-trash-can no-confirm icon-pointer" id="DNSBLWT|'
-			. 'delete_exclusion|' . $fields[7] . '" title="' . $s_txt . '"></i>';
+			. 'delete_exclusion|' . $h_f7 . '" title="' . $s_txt . '"></i>';
 	}
 
 	$supp_dom = $s_txt = '';
 	// Default Whitelist text for DNSBL/TLD domains
 	if ($isTLD) {
-		$s_txt  = "Note:&emsp;The following Domain was Wildcard blocked via TLD.\n\n"
-			. "Blocked Domain:&emsp;&emsp;[ {$fields[2]} ]\n"
-			. "Evaluated Domain:&emsp;&nbsp;[ {$fields[7]} ]\n\n"
-			. "DNSBL Groupname:&emsp;[ {$fields[6]} ]\n"
-			. "DNSBL Feedname:&emsp;&nbsp;&nbsp;[ {$fields[8]} ]\n\n";
+		$s_txt  = "Note:&emsp;The following Domain was blocked by Wildcard Blocking.\n\n"
+			. "Blocked Domain:&emsp;&emsp;[ {$h_f2} ]\n"
+			. "Evaluated Domain:&emsp;&nbsp;[ {$h_f7} ]\n\n"
+			. "DNSBL Groupname:&emsp;[ {$h_f6} ]\n"
+			. "DNSBL Feedname:&emsp;&nbsp;&nbsp;[ {$h_f8} ]\n\n";
 
-		if ($pfb['dnsbl_py_blacklist']) {
-			$s_txt .= "Whitelist [ {$fields[2]} ]\n\n"
-				. "Note:&emsp;This will immediately remove the blocked Domain\n"
-				. "&emsp;&emsp;&emsp;&nbsp;and associated CNAMES from DNSBL.\n" 
-				. "&emsp;&emsp;&emsp;&nbsp;(CNAMES: Define the external DNS server in Alert settings\n"
-				. "&emsp;&emsp;&emsp;&nbsp;&nbsp;and ensure that the Resolver has access to the External DNS server.)\n\n"
-				. "Whitelisting Options:\n\n"
-				. "1) Wildcard whitelist [ .{$fields[2]} ]\n"
-				. "2) Whitelist only [ {$fields[2]} ]\n";
-		} else {
-			$s_txt .= "Whitelisting Options:\n\n"
-				. "1) Wildcard whitelist [ .{$fields[7]} ]\n"
-				. "&emsp;This will immediately remove the blocked Domain/CNAMES from DNSBL.\n"
-				. "&emsp;(CNAMES: Define the external DNS server in Alert settings\n"
-				. "&emsp;&nbsp;and ensure that the Resolver has access to the External DNS server.)\n\n"
-				. "2) Add [ {$fields[7]} ] to the 'TLD Exclusion customlist'\n"
-				. "&emsp;A Force Reload-DNSBL is Required!\n"
-				. "&emsp;After a Reload any new blocked Domains can be Whitelisted at that time.";
-		}
-	}
-	else {
-		$s_txt = "Whitelist [ {$fields[2]} ]\n\n"
+		$s_txt .= "Whitelist [ {$h_f2} ]\n\n"
 			. "Note:&emsp;This will immediately remove the blocked Domain\n"
 			. "&emsp;&emsp;&emsp;&nbsp;and associated CNAMES from DNSBL.\n"
-			. "&emsp;&emsp;&emsp;&nbsp;(CNAMES: Define the external DNS server in Alert settings\n"
+			. "&emsp;&emsp;&emsp;&nbsp;(CNAMES: Define the external DNS server in 'Alert Settings' on 'Reports'\n"
 			. "&emsp;&emsp;&emsp;&nbsp;&nbsp;and ensure that the Resolver has access to the External DNS server.)\n\n"
 			. "Whitelisting Options:\n\n"
-			. "1) Wildcard whitelist [ .{$fields[2]} ]\n"
-			. "2) Whitelist only [ {$fields[2]} ]\n";
+			. "1) Wildcard whitelist [ .{$h_f2} ]\n"
+			. "2) Whitelist only [ {$h_f2} ]\n";
+	}
+	else {
+		$s_txt = "Whitelist [ {$h_f2} ]\n\n"
+			. "Note:&emsp;This will immediately remove the blocked Domain\n"
+			. "&emsp;&emsp;&emsp;&nbsp;and associated CNAMES from DNSBL.\n"
+			. "&emsp;&emsp;&emsp;&nbsp;(CNAMES: Define the external DNS server in 'Alert Settings' on 'Reports'\n"
+			. "&emsp;&emsp;&emsp;&nbsp;&nbsp;and ensure that the Resolver has access to the External DNS server.)\n\n"
+			. "Whitelisting Options:\n\n"
+			. "1) Wildcard whitelist [ .{$h_f2} ]\n"
+			. "2) Whitelist only [ {$h_f2} ]\n";
 	}
 
 	// Determine if Domain is blocked via TLD Blacklist
@@ -2103,29 +2190,30 @@ function dnsbl_whitelist_type($fields, $clists, $isExclusion, $isTLD, $qdomain) 
 		
 			// Default - Domain not in Whitelist
 			$supp_dom = '<i class="fa-solid fa-plus icon-pointer" id="DNSBLWT|' . 'add|'
-					. $fields[7] . '|' . $fields[8] . '" title="' . $s_txt . '"></i>';
+					. $h_f7 . '|' . $h_f8 . '" title="' . $s_txt . '"></i>';
 		}
 
 		// Determine if Blocked Domain is in DNSBL Whitelist
 		if (isset($clists['dnsblwhitelist']['data'][$fields[2]])) {
 			$w_line = rtrim($clists['dnsblwhitelist']['data'][$fields[2]], "\x00..\x1F");
+			$h_w_line = pfb_hsc($w_line);
 			$isWhitelist_found = TRUE;
 
 			// Verify if the Whitelisted Domain matches the Evaluated Domain
 			if ($fields[2] == $qdomain || $fields[6] == 'Unknown') {
 				$s_txt = "Note:&emsp;The following Domain exists in the DNSBL Whitelist:\n\n"
-					. "Whitelisted:&emsp;[ {$w_line} ]\n\n"
+					. "Whitelisted:&emsp;[ {$h_w_line} ]\n\n"
 					. "To remove this Domain from the DNSBL Whitelist, press 'OK'";
 			} else {
 				$s_txt = "Note:&emsp;The following Domain exists in the DNSBL Whitelist:\n\n"
-					. "Whitelisted:&emsp;[ {$w_line} ]\n\n"
+					. "Whitelisted:&emsp;[ {$h_w_line} ]\n\n"
 					. "However it is still being Wildcard blocked by the following Domain:\n"
-					. "Whitelisted:&emsp;[ {$qdomain} ]\n\n"
-					. "To remove this Domain [ {$fields[2]} ] from the DNSBL Whitelist"
+					. "Whitelisted:&emsp;[ {$h_qdomain} ]\n\n"
+					. "To remove this Domain [ {$h_f2} ] from the DNSBL Whitelist"
 					. ", Click 'OK'";
 			}
 			$supp_dom = '<i class="fa-solid fa-trash-can no-confirm icon-pointer" id="DNSBLWT|'
-					. 'delete_domain|' . $fields[2] . '" title="' . $s_txt . '"></i>';
+					. 'delete_domain|' . $h_f2 . '" title="' . $s_txt . '"></i>';
 		}
 
 		// Determine if Blocked Domain is in DNSBL Whitelist (prefixed by a "dot" )
@@ -2139,26 +2227,28 @@ function dnsbl_whitelist_type($fields, $clists, $isExclusion, $isTLD, $qdomain) 
 				$d_query = implode('.', array_slice($dparts, -$i, $i, TRUE));
 				if (isset($clists['dnsblwhitelist']['data']['.' . $d_query])) {
 					$w_line = rtrim($clists['dnsblwhitelist']['data']['.' . $d_query], "\x00..\x1F");
+					$h_w_line = pfb_hsc($w_line);
+					$h_d_query = pfb_hsc($d_query);
 					$isWhitelist_found = TRUE;
 
 					if ($d_query == $qdomain || $fields[6] == 'Unknown') {
 						$s_txt = "Note:&emsp;The following Domain exists"
 							. " in the DNSBL Whitelist:\n\n"
-							. "Whitelisted:&emsp;[ {$w_line} ]\n\n"
+							. "Whitelisted:&emsp;[ {$h_w_line} ]\n\n"
 							. "To remove this Domain from the DNSBL Whitelist,"
 							. " press 'OK'";
 					} else {
 						$s_txt = "Note:&emsp;The following Domain exists in the"
 							. " DNSBL Whitelist:\n\n"
-							. "Whitelisted:&emsp;[ {$w_line} ]\n\n"
+							. "Whitelisted:&emsp;[ {$h_w_line} ]\n\n"
 							. "However it is still being Wildcard blocked"
 							. " by the following Domain:\n"
-							. "Whitelisted:&emsp;[ {$qdomain} ]\n\n"
-							. "To remove this Domain [ {$d_query} ]"
+							. "Whitelisted:&emsp;[ {$h_qdomain} ]\n\n"
+							. "To remove this Domain [ {$h_d_query} ]"
 							. "from the DNSBL Whitelist, Click 'OK'";
 					}
 					$supp_dom = '<i class="fa-solid fa-trash-can no-confirm icon-pointer"'
-							. ' id="DNSBLWT|' . "delete_domainwildcard|" . $d_query
+							. ' id="DNSBLWT|' . "delete_domainwildcard|" . $h_d_query
 							. '" title="' . $s_txt . '"></i>';
 					break;
 				}
@@ -2168,31 +2258,109 @@ function dnsbl_whitelist_type($fields, $clists, $isExclusion, $isTLD, $qdomain) 
 		// Root Domain blocking all Sub-Domains and is not in whitelist and not in TLD Exclusion
 		if ($isTLD && !$isWhitelist_found && !$isExclusion) {
 			$supp_dom = '<i class="fa-solid fa-plus-circle icon-pointer" id="DNSBLWT|' . 'add|'
-				. $fields[7] . '|' . $fields[8] . '|' . $fields[5] . '" title="' . $s_txt . '"></i>';
+				. $h_f7 . '|' . $h_f8 . '|' . pfb_hsc($fields[5]) . '" title="' . $s_txt . '"></i>';
 		}
 	}
 
 	// Whole TLD is blocked
 	else {
-		$s_txt  = "Note:&emsp;The following Domain was blocked via 'DNSBL TLD' (TLD Blacklist):\n\n"
-			. "Blocked Domain:&emsp;&emsp;[ {$fields[2]} ]\n"
-			. "Evaluated Domain:&emsp;&nbsp;[ {$fields[7]} ]\n\n"
-			. "Add [ {$fields[2]} ] to the TLD Whitelist?";
+		$s_txt  = "Note:&emsp;The following Domain was blocked by a 'TLD Blacklist' entry:\n\n"
+			. "Blocked Domain:&emsp;&emsp;[ {$h_f2} ]\n"
+			. "Evaluated Domain:&emsp;&nbsp;[ {$h_f7} ]\n\n"
+			. "Add [ {$h_f2} ] to 'DNSBL Whitelist'?";
 
 		$supp_dom = '<i class="fa-regular fa-hand icon-pointer" id="DNSBLWT|' . 'tld|'
-			. $fields[2] . '|' . $fields[7] . '" title="' . $s_txt . '"></i>';
+			. $h_f2 . '|' . $h_f7 . '" title="' . $s_txt . '"></i>';
 	}
 
 	return array ($supp_dom, $ex_dom, $isWhitelist_found);
 }
 
 
+/**
+ * `|alias…` suffix for PFBIPSUP / PFBIPWHITE ids from one family's `$clists` entry.
+ * Shared by the event-table suppression icon and the Unlocked panel.
+ */
+function pfb_alerts_permit_option_suffix($family): string
+{
+	if (!is_array($family) || empty($family['options']) || !is_array($family['options'])) {
+		return '';
+	}
+	return '|' . implode('|', $family['options']);
+}
+
+
+/**
+ * Action icons for one Unlocked IPs/Domains panel row (Alerts tab).
+ * Temporary unlock and permanent whitelist/suppression stay independent (issue #1526).
+ *
+ * Confirm-dialog titles shadow the event-table copies in convert_ip_log()
+ * `$supp_ip_txt` and dnsbl_whitelist_type() `$s_txt`, shortened for the panel
+ * (no feed/eval-IP, no forced-update / CNAME parenthetical).
+ *
+ * @return array{alert: string, unlock: string, supp: string}
+ */
+function pfb_alerts_unlocked_entry_actions(string $kind, string $entry, string $type, array $clists): array
+{
+	$h_entry = pfb_hsc($entry);
+	$h_type  = pfb_hsc($type);
+
+	if ($kind === 'ip') {
+		$unlock = '<i class="fa-solid fa-unlock text-primary" id="IPLCK|' . $h_entry . '|' . $h_type
+			. '" title="Re-Lock IP: [ ' . $h_entry . ' ] back into Aliastable [ '
+			. $h_type . ' ]? "></i>';
+		$alert = '<a class="fa-solid fa-info icon-pointer" target="_blank" rel="noopener noreferrer"'
+			. ' href="/pfblockerng/pfblockerng_threats.php?host='
+			. $h_entry . '" title="Click for Threat source IP Lookup for [ ' . $h_entry . ' ]"></a>';
+		$vtype = (strpos($entry, ':') !== FALSE) ? '6' : '4';
+		$permit_option = pfb_alerts_permit_option_suffix($clists['ipwhitelist' . $vtype] ?? NULL);
+		$supp_txt = "Note:&emsp;The following IPv{$vtype} is temporarily unlocked:\n\n"
+			. "IP:&emsp;[ {$h_entry} ]\n"
+			. "IP Aliasname:&emsp;[ {$h_type} ]\n\n"
+			. "Whitelisting Options:\n\n"
+			. "1) Suppress the IP.\n"
+			. "2) Whitelist the IP to an existing 'Permit' Alias customlist.\n\n"
+			. "Click 'OK' to continue";
+		$supp = '<i class="fa-solid fa-plus icon-pointer" id="PFBIPSUP|' . 'add|' . $h_entry
+			. '|' . $h_type . $permit_option
+			. '" title="' . $supp_txt . '"></i>';
+	} else {
+		$unlock = '<i class="fa-solid fa-unlock text-primary" id="DNSBL_LCK|' . $h_entry . '|' . $h_type
+			. '" title="Re-Lock Domain: [ ' . $h_entry . ' ] back into DNSBL? "></i>';
+		$alert = '<a class="fa-solid fa-info icon-pointer" target="_blank" rel="noopener noreferrer"'
+			. ' href="/pfblockerng/pfblockerng_threats.php?domain='
+			. $h_entry . '" title="Click for Threat source Domain Lookup for [ ' . $h_entry . ' ]"></a>';
+		$supp_txt = "Whitelist [ {$h_entry} ]\n\n"
+			. "Note:&emsp;This will immediately remove the blocked Domain\n"
+			. "&emsp;&emsp;&emsp;&nbsp;and associated CNAMES from DNSBL.\n\n"
+			. "Whitelisting Options:\n\n"
+			. "1) Wildcard whitelist [ .{$h_entry} ]\n"
+			. "2) Whitelist only [ {$h_entry} ]\n";
+		$tld_field = (strpos($type, 'TLD') !== FALSE) ? '|TLD' : '';
+		$supp = '<i class="fa-solid fa-plus icon-pointer" id="DNSBLWT|' . 'add|'
+			. $h_entry . '|' . $h_type . $tld_field . '" title="' . $supp_txt . '"></i>';
+	}
+
+	return array('alert' => $alert, 'unlock' => $unlock, 'supp' => $supp);
+}
+
+
 // Function to convert dnsbl.log -> Reports Tab
 function convert_dnsbl_log($mode, $fields) {
-	global $pfb, $local_hosts, $dnsbl_int, $filterfieldsarray, $clists, $dnsbl_unlock, $dup, $counter,
+	global $pfb, $pfb_webgui_dark, $local_hosts, $dnsbl_int, $filterfieldsarray, $clists, $dnsbl_unlock, $dup, $counter,
 		$pfbentries, $skipcount, $dnsblfilterlimit, $dnsblfilterlimitentries;
 
 	if ($dnsblfilterlimit) {
+		return TRUE;
+	}
+
+	// Counter/limit gate (issue #809): the non-filter limit check runs first,
+	// unconditionally. The filter-mode limit gate stays after the filter-MATCH gate
+	// below -- it only trips on rows that pass the match, so hoisting it would
+	// mis-flag a post-limit tail of non-matching rows.
+	if (!$pfb['filterlogentries'] &&
+		$counter[$mode == 'Unified' && !$pfb['filterlogentries'] ? 'Unified' : 'DNSBL'] >= $pfbentries) {
+		$dnsblfilterlimit = TRUE;
 		return TRUE;
 	}
 
@@ -2208,6 +2376,7 @@ function convert_dnsbl_log($mode, $fields) {
 		[7]	= Evaluated Domain/TLD
 		[8]	= Feed Name
 		[9]	= Duplicate ID indicator / Count
+		[10]	= Query Type - Python mode only: 'A', 'AAAA', 'ANY', ... (absent on older/Unbound-mode lines, where A/AAAA is carried in the b_type suffix [5])
 
 	pfbalertdnsbl fields array reference (Used for filter functionality)
 
@@ -2225,64 +2394,22 @@ function convert_dnsbl_log($mode, $fields) {
 		$fields[4] = '';
 	}
 
+	// Upstream DNS block (logged by _log_upstream_block; not a local feed entry).
+	$isUpstream = ($fields[5] === 'Upstream_Block');
+
 	// Determine event parameters
 	list ( $isTLD, $isCNAME, $isPython, $isExclusion, $pfb_python, $qdomain, $wt_line ) = dnsbl_log_details($fields);
 
 	// Determine Whitelist type
 	list ( $supp_dom, $ex_dom, $isWhitelist_found ) = dnsbl_whitelist_type($fields, $clists, $isExclusion, $isTLD, $qdomain);
 
-	$isMatch = TRUE;
-	$p_group = $p_domain = $p_feed = $p_mode = '';
+	// ADR-65: rows render their OWN logged fields -- the render-time re-check
+	// against the (retired) interchange files is gone; no group/feed/mode/domain
+	// drift refinement runs here anymore.
 
-	// Collect current details about domain
-	if (!$isPython && !$isWhitelist_found) {
-		$domain_details = pfb_dnsbl_parse('alerts', $qdomain, '', '');
-		$pfb_mode	= $domain_details['pfb_mode']	?: 'Unknown';
-		$pfb_group	= $domain_details['pfb_group']	?: 'Unknown';
-		$pfb_final	= $domain_details['pfb_final']	?: 'Unknown';
-		$pfb_feed	= $domain_details['pfb_feed']	?: 'Unknown';
-
-		// Determine if log entry 'Group' has changed
-		if ("{$fields[6]}" != "{$pfb_group}") {
-			$isMatch	= FALSE;
-			$p_group	= $fields[6];
-			$fields[6]	= $pfb_group;
-		}
-
-		// Determine if log entry 'Domain' has changed
-		if ("{$fields[7]}" != "{$pfb_final}") {
-			$isMatch	= FALSE;
-			$p_domain	= $fields[7];
-			$fields[7]	= $pfb_final;
-		}
-
-		// Determine if log entry 'Feed' has changed
-		if ("{$fields[8]}" != "{$pfb_feed}") {
-			$isMatch	= FALSE;
-			$p_feed		= $fields[8];
-			$fields[8]	= $pfb_feed;
-		}
-
-		// Determine if log entry 'Blocking mode' has changed
-		if ($isTLD) {
-			if (strpos($pfb_mode, 'TLD') === FALSE) {
-				$isMatch	= FALSE;
-				$p_mode		= $fields[5];
-				$fields[5]	= $pfb_mode;
-			}
-		} else {
-			if (strpos($pfb_mode, 'DNSBL') === FALSE) {
-				$isMatch	= FALSE;
-				$p_mode		= $fields[5];
-				$fields[5]	= $pfb_mode;
-			}
-		}
-	}
-
-	// On failed Match verification, re-evaluate parameters
-	if (!$isMatch) {
-		list ( $isTLD, $isCNAME, $isPython, $isExclusion, $pfb_python, $qdomain, $wt_line ) = dnsbl_log_details($fields);
-		list ( $supp_dom, $ex_dom, $isWhitelist_found ) = dnsbl_whitelist_type($fields, $clists, $isExclusion, $isTLD, $qdomain);
+	// Upstream block: override icon to cloud (uses raw fields[7]/[8] before truncation below).
+	if ($isUpstream) {
+		$pfb_python = "&nbsp;<i class=\"fa-solid fa-cloud\" title=\"Upstream Block: " . pfb_hsc($fields[7]) . " [ " . pfb_hsc($fields[8]) . " ]\"></i>";
 	}
 
 	// Filter Field array
@@ -2296,7 +2423,7 @@ function convert_dnsbl_log($mode, $fields) {
 				$pfbalertdnsbl[2] = 'Unknown';
 				break;
 			} elseif (ip_in_subnet($fields[3], $subnet[0])) {
-				$pfbalertdnsbl[2] = "{$subnet[1]}";
+				$pfbalertdnsbl[2] = pfb_hsc($subnet[1]);
 				break;
 			}
 		}
@@ -2306,37 +2433,28 @@ function convert_dnsbl_log($mode, $fields) {
 	$hostname = array_key_exists($fields[3], $local_hosts) ? $local_hosts[$fields[3]] : '';
 	if (!empty($hostname)) {
 		$h_title		= '';
-		if (strlen($hostname) >= 25) {
-			$h_title	= $hostname;
-			$hostname	= substr($hostname, 0, 24) . "<small>...</small>";
+		if (mb_strlen($hostname, 'UTF-8') >= 25) {
+			$h_title	= pfb_hsc($hostname);
+			$hostname	= pfb_hsc(pfb_truncate($hostname, 24)) . "<small>...</small>";
+		} else {
+			$hostname	= pfb_hsc($hostname);
 		}
 
-		$pfbalertdnsbl[7]	= $fields[3];
+		$pfbalertdnsbl[7]	= pfb_hsc($fields[3]);
 		$pfbalertdnsbl[17]	= "<span title=\"{$h_title}\">{$hostname}</span>";
 	} else {
-		$pfbalertdnsbl[7]	= $fields[3];
+		$pfbalertdnsbl[7]	= pfb_hsc($fields[3]);
 		$pfbalertdnsbl[17]	= '';
-	}
-
-	if (!empty($p_domain)) {
-		if (strpos($p_domain, 'xn--') !== FALSE) {
-			$p_domain = "{$p_domain} [" . idn_to_utf8($p_domain) . "]";
-		}
-
-		if (strlen($p_domain) >= ($mode != 'unified' ? 60 : 40)) {
-			$p_domain = "<s title=\"Previous Domain: {$p_domain}\">" . substr($p_domain, 0, ($mode != 'unified' ? 59 : 39))
-					. "</s><small>...</small><br />";
-		} else {
-			$p_domain = "<s title=\"Previous Domain: {$p_domain}\">{$p_domain}</s><br />";
-		}
 	}
 
 	$f2 = $fields[2];
 	if (strpos($f2, 'xn--') !== FALSE) {
 		$f2 = "{$f2} [" . idn_to_utf8($f2) . "]";
 	}
-	if (strlen($f2) >= ($mode != 'unified' ? 60 : 40)) {
-		$f2 = substr($f2, 0, ($mode != 'unified' ? 59 : 39)) . "<small>...</small>";
+	if (mb_strlen($f2, 'UTF-8') >= ($mode != 'Unified' ? 60 : 40)) {
+		$f2 = pfb_hsc(pfb_truncate($f2, ($mode != 'Unified' ? 59 : 39))) . "<small>...</small>";
+	} else {
+		$f2 = pfb_hsc($f2);
 	}
 
 	if ($isCNAME) {
@@ -2344,12 +2462,14 @@ function convert_dnsbl_log($mode, $fields) {
 		if (strpos($f7, 'xn--') !== FALSE) {
 			$f7		= "{$f7} [" . idn_to_utf8($f7) . "]";
 		}
-		if (strlen($f7) >= ($mode != 'unified' ? 52 : 32)) {
-			$f7		= substr($f7, 0, ($mode != 'unified' ? 51 : 31)) . "<small>...</small>";
+		if (mb_strlen($f7, 'UTF-8') >= ($mode != 'Unified' ? 52 : 32)) {
+			$f7		= pfb_hsc(pfb_truncate($f7, ($mode != 'Unified' ? 51 : 31))) . "<small>...</small>";
+		} else {
+			$f7		= pfb_hsc($f7);
 		}
-		$pfbalertdnsbl[8]	= "{$p_domain}Domain: {$f2}<br />CNAME: {$f7}";
+		$pfbalertdnsbl[8]	= "Domain: {$f2}<br />CNAME: {$f7}";
 	} else {
-		$pfbalertdnsbl[8]	= "{$p_domain}{$f2}";
+		$pfbalertdnsbl[8]	= "{$f2}";
 	}
 
 	$f_g_title = '';
@@ -2357,7 +2477,7 @@ function convert_dnsbl_log($mode, $fields) {
 	// Add Title - Header line to Feed/Group
 	if ($fields[6] == 'Unknown') {
 		if ($isTLD) {
-			$f_g_title = "The domain: [ {$fields[7]} ] is not currently listed in DNSBL as a TLD wildcard blocked domain.";
+			$f_g_title = "The domain: [ " . pfb_hsc($fields[7]) . " ] is not currently listed in DNSBL as a TLD wildcard blocked domain.";
 		} else {
 			$f_g_title = 'The domain is not currently listed in DNSBL!';
 		}
@@ -2366,48 +2486,48 @@ function convert_dnsbl_log($mode, $fields) {
 		$f_g_title = "The Feed and Group that blocked the indicated Domain:";
 	}
 
-	if (!empty($p_feed)) {
-		$f_g_title .= "&#013;Previous Feed: {$p_feed}";
-		if (strlen($p_feed) >= 25) {
-			$p_feed	= substr($p_feed, 0, 24) . "<small>...</small>";
-		}
-		$p_feed	= "<s>{$p_feed}</s><br />";
-	}
 	if (!empty($fields[8])) {
-		$f_g_title .= "&#013;Feed: {$fields[8]}";
-	}
-	if (!empty($p_group)) {
-		$f_g_title .= "&#013;Previous Group: {$p_group}";
-		if (strlen($p_group) >= 25) {
-			$p_group = substr($p_group, 0, 24) . "<small>...</small>";
-		}
-		$p_group = "<s>{$p_group}</s><br />";
+		$f_g_title .= "&#013;Feed: " . pfb_hsc($fields[8]);
 	}
 	if (!empty($fields[6])) {
-		$f_g_title .= "&#013;Group: {$fields[6]}";
+		$f_g_title .= "&#013;Group: " . pfb_hsc($fields[6]);
 	}
 
-	$pfbalertdnsbl[13]	= "{$p_group}{$fields[6]}";
-	$pfbalertdnsbl[15]	= "{$p_feed}{$fields[8]}";
+	$pfbalertdnsbl[13]	= pfb_hsc($fields[6]);
+	$pfbalertdnsbl[15]	= pfb_hsc($fields[8]);
+
+	// Group the Feed/Group cell by record; no previous value to strike anymore (ADR-65).
+	$feed_group_cell = pfb_dnsbl_feed_group_cell('', pfb_hsc($fields[8]), '', pfb_hsc($fields[6]));
+
+	// Query type suffix (Python mode logs the record type as field [10]; older
+	// Unbound-mode lines carry it in the b_type suffix [5] and lack field [10]).
+	$qtype_sfx = '';
+	if (isset($fields[10])) {
+		$qtype = trim($fields[10]);
+		if ($qtype != '' && $qtype != 'Unknown') {
+			$qtype_sfx = " | " . pfb_hsc($qtype);
+		}
+	}
 
 	if (!empty($fields[4])) {
-		if (strlen($fields[4]) >= 25) {
-			$f4 = substr($fields[4], 0, 24) . "<small>...</small>";
-			$fields[4] = "<span title=\"{$fields[4]}\">{$f4}</span>";
+		if (mb_strlen($fields[4], 'UTF-8') >= 25) {
+			$f4 = pfb_hsc(pfb_truncate($fields[4], 24)) . "<small>...</small>";
+			$fields[4] = "<span title=\"" . pfb_hsc($fields[4]) . "\">{$f4}</span>";
+		} else {
+			$fields[4] = pfb_hsc($fields[4]);
 		}
-		$pfbalertdnsbl[19] = "{$fields[0]} | {$fields[4]}";
+		$pfbalertdnsbl[19] = pfb_hsc($fields[0]) . " | {$fields[4]}{$qtype_sfx}";
 	} else {
-		$pfbalertdnsbl[19] = "{$fields[0]}";
+		$pfbalertdnsbl[19] = pfb_hsc($fields[0]) . "{$qtype_sfx}";
 	}
 
-	if (!empty($p_mode)) {
-		$p_mode = "<s title=\"Previous Blocking Mode\">{$p_mode}</s> | ";
-	}
-	$pfbalertdnsbl[20]	= "{$p_mode}{$fields[5]}";
+	$pfbalertdnsbl[20]	= pfb_hsc($fields[5]);
 
-	$pfbalertdnsbl[99]	= $fields[1];	// Timestamp
+	$pfbalertdnsbl[99]	= pfb_hsc($fields[1]);	// Timestamp
 
-	// If alerts filtering is selected, process filters as required.
+	// If alerts filtering is selected, process filters as required. ADR-65: a
+	// feed/group-name filter now matches the LOGGED value ($pfbalertdnsbl is built
+	// straight from $fields), not a re-derived current one.
 	if ($pfb['filterlogentries']) {
 		if (empty($filterfieldsarray[1])) {
 			return TRUE;
@@ -2420,12 +2540,6 @@ function convert_dnsbl_log($mode, $fields) {
 			return TRUE;
 		}
 	}
-	else {
-		if ($counter[$mode == 'Unified' && !$pfb['filterlogentries'] ? 'Unified' : 'DNSBL'] >= $pfbentries) {
-			$dnsblfilterlimit = TRUE;
-			return TRUE;
-		}
-	}
 	$counter[$mode == 'Unified' && !$pfb['filterlogentries'] ? 'Unified' : 'DNSBL']++;
 
 	// Determine Whitelist type
@@ -2434,51 +2548,49 @@ function convert_dnsbl_log($mode, $fields) {
 	// Lock/Unlock Domain Icon
 	$s_txt = '';
 	$unlock_dom = '&nbsp;&nbsp;&nbsp;';
-	if (($fields[6] != 'Unknown' && !$pfb['dnsbl_py_blacklist'] && $isMatch) || ($pfb['dnsbl_py_blacklist'])) {
 
-		if ((!$pfb['dnsbl_py_blacklist'] && $fields[5] != 'DNSBL_TLD') || $pfb['dnsbl_py_blacklist']) {
 
-			$tnote = "\n\nNote:&emsp;&#8226; Unlocking Domain(s) is temporary and may be automatically\n"
-				. "&emsp;&emsp;&emsp;&emsp;re-locked on a Cron or Force command with an Unbound Reload!\n"
-				. "&emsp;&emsp;&emsp;&nbsp;&#8226; Review Threat Source ( i ) Icon for Domain details.\n"
-				. "&emsp;&emsp;&emsp;&nbsp;&#8226; Clear your Browser and OS cache after each Lock/Unlock!";
+	$tnote = "\n\nNote:&emsp;&#8226; Unlocking is temporary; the next DNSBL reload locks the Domain again.\n"
+		. "&emsp;&emsp;&emsp;&nbsp;&#8226; Review Threat Source ( i ) Icon for Domain details.\n"
+		. "&emsp;&emsp;&emsp;&nbsp;&#8226; Clear your Browser and OS cache after each Lock/Unlock!";
 
-			if ($isPython) {
-				$unlock_type = 'python';
-			} else {
-				$unlock_type = $fields[5];
-			}
+	if ($isPython) {
+		$unlock_type = 'python';
+	} else {
+		$unlock_type = $fields[5];
+	}
 
-			if (!isset($dnsbl_unlock[$qdomain])) {
-				if ($isWhitelist_found) {
-					$s_txt = "\n\nNote:&emsp;The following Domain exists in the DNSBL Whitelist:\n\n"
-						. "Whitelisted:&emsp;[ {$qdomain} ]\n\n"
-						. "This Domain can be temporarily Relocked into DNSBL\n"
-						. "by selecting the Unlock Icon!";
+	$h_qdomain	= pfb_hsc($qdomain);
+	$h_unlock_type	= pfb_hsc($unlock_type);
 
-					$unlock_dom = '<i class="fa-solid fa-unlock text-warning" id="DNSBL_RELCK|'
-							. $qdomain . '|' . $unlock_type . '" title="' . $s_txt . '"></i>';
-				}
-				else {
-					$unlock_dom = '<i class="fa-solid fa-lock text-danger" id="DNSBL_ULCK|'
-							. $qdomain . '|' . $unlock_type
-							. '" title="Unlock Domain: [ ' . $qdomain . '] from DNSBL?' . $tnote . '" ></i>';
-				}
-			} else {
-				if ($isWhitelist_found) {
-					$s_txt = "\n\nNote:&emsp;The following Domain exists in the DNSBL Whitelist:\n\n"
-						. "Whitelisted:&emsp;[ {$wt_line} ]\n\n"
-						. "Unlock this Domain by selecting the Unlock Icon!";
+	if (!isset($dnsbl_unlock[$qdomain])) {
+		if ($isWhitelist_found) {
+			$s_txt = "\n\nNote:&emsp;The following Domain exists in the DNSBL Whitelist:\n\n"
+				. "Whitelisted:&emsp;[ {$h_qdomain} ]\n\n"
+				. "This Domain can be temporarily Relocked into DNSBL\n"
+				. "by selecting the Unlock Icon!";
 
-					$unlock_dom = '<i class="fa-solid fa-lock text-warning" id="DNSBL_REULCK|'
-						. $qdomain . '|' . $unlock_type . '" title="' . $s_txt . '"></i>';
-				}
-				else {
-					$unlock_dom = '<i class="fa-solid fa-unlock text-primary" id="DNSBL_LCK|'
-						. $qdomain . '|' . $unlock_type . '" title="Re-Lock Domain: ['
-						. $qdomain . ' ] back into DNSBL?' . $tnote . '" ></i>';
-				}
-			}
+			$unlock_dom = '<i class="fa-solid fa-unlock text-warning" id="DNSBL_RELCK|'
+					. $h_qdomain . '|' . $h_unlock_type . '" title="' . $s_txt . '"></i>';
+		}
+		else {
+			$unlock_dom = '<i class="fa-solid fa-lock text-danger" id="DNSBL_ULCK|'
+					. $h_qdomain . '|' . $h_unlock_type
+					. '" title="Unlock Domain: [ ' . $h_qdomain . '] from DNSBL?' . $tnote . '" ></i>';
+		}
+	} else {
+		if ($isWhitelist_found) {
+			$s_txt = "\n\nNote:&emsp;The following Domain exists in the DNSBL Whitelist:\n\n"
+				. "Whitelisted:&emsp;[ " . pfb_hsc($wt_line) . " ]\n\n"
+				. "Unlock this Domain by selecting the Unlock Icon!";
+
+			$unlock_dom = '<i class="fa-solid fa-lock text-warning" id="DNSBL_REULCK|'
+				. $h_qdomain . '|' . $h_unlock_type . '" title="' . $s_txt . '"></i>';
+		}
+		else {
+			$unlock_dom = '<i class="fa-solid fa-unlock text-primary" id="DNSBL_LCK|'
+				. $h_qdomain . '|' . $h_unlock_type . '" title="Re-Lock Domain: ['
+				. $h_qdomain . ' ] back into DNSBL?' . $tnote . '" ></i>';
 		}
 	}
 
@@ -2491,14 +2603,23 @@ function convert_dnsbl_log($mode, $fields) {
 	// Threat Lookup Icon
 	$alert_dom = '';
 	if ($fields[6] != 'Unknown') {
-		$alert_dom = '<a class="fa-solid fa-info icon-pointer" title="Click for Threat Domain Lookup." target="_blank" ' .
-				'href="/pfblockerng/pfblockerng_threats.php?domain=' . $qdomain . '"></a>';
+		$alert_dom = '<a class="fa-solid fa-info icon-pointer" title="Click for Threat Domain Lookup." target="_blank" rel="noopener noreferrer" ' .
+				'href="/pfblockerng/pfblockerng_threats.php?domain=' . pfb_hsc($qdomain) . '"></a>';
 	}
 
 	$dup_cnt = '';
 	if ($dup['DNSBL'] != 0) {
 		$dup_cnt = "<span title=\"Total additional duplicate event count(s) [ {$dup['DNSBL']} ]\"> [{$dup['DNSBL']}]</span>";
 		$dup['DNSBL'] = 0;
+	}
+
+	// Upstream blocks have no local feed entry: suppress the lock/whitelist/exclusion
+	// action icons (they all target a local-feed domain; they are no-op or confusing
+	// for an upstream block). The threat-lookup $alert_dom icon is kept as-is.
+	if ($isUpstream) {
+		$unlock_dom = '&nbsp;&nbsp;&nbsp;';
+		$supp_dom   = '';
+		$ex_dom     = '';
 	}
 
 	if ($mode != 'Unified') {
@@ -2509,16 +2630,22 @@ function convert_dnsbl_log($mode, $fields) {
 			<td style=\"white-space: nowrap;\">{$unlock_dom}&nbsp;{$alert_dom}&nbsp;{$supp_dom}{$ex_dom}</td>
 			<td>{$pfbalertdnsbl[8]}<small>&emsp;[ {$pfbalertdnsbl[20]} ]</small> {$pfb_https}{$pfb_python}
 				<br /><small>{$pfbalertdnsbl[19]}</small></td>
-			<td title=\"{$f_g_title}\">{$pfbalertdnsbl[15]}<br /><small>{$pfbalertdnsbl[13]}</small></td>
+			<td title=\"{$f_g_title}\">{$feed_group_cell}</td>
 			</tr>");
 	}
 	else {
-		$bg = strpos(config_get_path('system/webgui/webguicss'), 'dark') ? $pfb['unidnsbl2'] : $pfb['unidnsbl'];
+		// foreign key: system/webgui/webguicss is a pfSense core key, not in registry
+		if ($isUpstream) {
+			$bg = $pfb_webgui_dark ? $pfb['uniupstream2'] : $pfb['uniupstream'];
+		} else {
+			$bg = $pfb_webgui_dark ? $pfb['unidnsbl2'] : $pfb['unidnsbl'];
+		}
 		if ($bg == 'none') {
 			$bg = '';
 		}
+		$tr_title = $isUpstream ? 'Upstream Block Event' : 'DNSBL Event';
 
-		print ("<tr title=\"DNSBL Event\" style=\"background-color:{$bg}\">
+		print ("<tr title=\"{$tr_title}\" style=\"background-color:{$bg}\">
 			<td style=\"white-space: nowrap;\">{$pfbalertdnsbl[99]}{$dup_cnt}</td>
 			<td></td>
 			<td>{$pfbalertdnsbl[7]}<br /><small>{$pfbalertdnsbl[17]}</small></td>
@@ -2527,7 +2654,7 @@ function convert_dnsbl_log($mode, $fields) {
 			<td>{$pfbalertdnsbl[2]}</td>
 			<td style=\"white-space: nowrap;\">{$unlock_dom}&nbsp;{$alert_dom}&nbsp;{$supp_dom}{$ex_dom}</td>
 			<td>{$pfbalertdnsbl[8]}</td>
-			<td title=\"{$f_g_title}\">{$pfbalertdnsbl[15]}<br /><small>{$pfbalertdnsbl[13]}</small></td>
+			<td title=\"{$f_g_title}\">{$feed_group_cell}</td>
 			<td></td>
 			</tr>");
 	}
@@ -2537,7 +2664,7 @@ function convert_dnsbl_log($mode, $fields) {
 
 // Function to convert dns_reply.log -> Reports Tab
 function convert_dns_reply_log($mode, $fields) {
-	global $pfb, $local_hosts, $filterfieldsarray, $clists, $counter, $pfbentries, $skipcount, $dnsfilterlimit, $dnsfilterlimitentries;
+	global $pfb, $pfb_webgui_dark, $local_hosts, $filterfieldsarray, $clists, $counter, $pfbentries, $skipcount, $dnsfilterlimit, $dnsfilterlimitentries;
 
 	if ($dnsfilterlimit) {
 		return TRUE;
@@ -2575,14 +2702,17 @@ function convert_dns_reply_log($mode, $fields) {
 	$counter[$mode == 'Unified' && !$pfb['filterlogentries'] ? 'Unified' : 'DNS']++;
 
 	$hostname = $local_hosts[$fields[7]] ?: '';
-	if (!empty($hostname) && strlen($hostname) >= 25) {
-		$title_hostname = $hostname;
-		$hostname	= substr($hostname, 0, 24) . "<small>...</small>";
+	$title_hostname = '';
+	if (!empty($hostname) && mb_strlen($hostname, 'UTF-8') >= 25) {
+		$title_hostname = pfb_hsc($hostname);
+		$hostname	= pfb_hsc(pfb_truncate($hostname, 24)) . "<small>...</small>";
+	} else {
+		$hostname	= pfb_hsc($hostname);
 	}
 
 	// Determine if Domain is a TLD Exclusion
 	$isExclusion = FALSE;
-	if (isset($clists['tldexclusion']['data'][$fields[7]])) {
+	if (isset($clists['tld_wildcard_exclusion']['data'][$fields[7]])) {
 		$isExclusion = TRUE;
 	}
 
@@ -2598,12 +2728,35 @@ function convert_dns_reply_log($mode, $fields) {
 	// Determine Whitelist type
 	else {
 
-		$dns_fields = array ('2' => $fields[6], '6' => 'Unknown');
+		// issue #1777: dnsbl_whitelist_type() unconditionally reads keys 5/7/8 too
+		// (DNSBL Mode / Evaluated Domain / Feed Name) -- a DNS reply row has no
+		// Mode, Evaluated Domain or Feed, so each key preserves the pre-fix
+		// implicit-NULL read at its own call site:
+		//   - key 5 (DNSBL Mode, gates the != 'DNSBL_TLD' branch split): '' keeps
+		//     the pre-fix branch selection byte-for-byte, since NULL != 'DNSBL_TLD'
+		//     is also TRUE.
+		//   - key 7 (Evaluated Domain): '' -- NOT $fields[6]. A prior fix set this
+		//     to $fields[6] (the replied domain) reasoning only about the
+		//     exclusion-icon id; it missed that dnsbl_whitelist_type() ALSO feeds
+		//     key 7 into the dot-prefixed wildcard-whitelist walk
+		//     (dnsbl_whitelist_type() ~:2056, `ltrim($fields[7], '.')`). A real
+		//     domain there enters that walk and can flip $isWhitelist_found to
+		//     TRUE for any dot-prefixed whitelist entry that is an ancestor
+		//     domain -- silently reclassifying an unrelated reply row as
+		//     already-whitelisted. '' is chosen because
+		//     ltrim(NULL, '.') === ltrim('', '.') === '', so it reproduces the
+		//     pre-fix NULL read exactly and never enters the walk.
+		//   - key 8 (Feed Name) is read only inside the `$fields[6] != 'Unknown'`
+		//     branch (dnsbl_whitelist_type() ~:2023), which the caller's own
+		//     hardcoded '6' => 'Unknown' provably never enters -- no reply-log
+		//     analogue exists and none is needed; '' is inert by construction.
+		// The replied domain doubles as key 2 and the $qdomain argument below.
+		$dns_fields = array ('2' => $fields[6], '5' => '', '6' => 'Unknown', '7' => '', '8' => '');
 		list($supp_dom, $ex_dom, $isWhitelist_found) = dnsbl_whitelist_type($dns_fields, $clists, $isExclusion, FALSE, $fields[6]);
 
 		// Threat Lookup Icon
-		$icons = '<a class="fa-solid fa-info icon-pointer" title="Click for Threat Domain Lookup." target="_blank" ' .
-				'href="/pfblockerng/pfblockerng_threats.php?domain=' . $fields[6] . '"></a>';
+		$icons = '<a class="fa-solid fa-info icon-pointer" title="Click for Threat Domain Lookup." target="_blank" rel="noopener noreferrer" ' .
+				'href="/pfblockerng/pfblockerng_threats.php?domain=' . pfb_hsc($fields[6]) . '"></a>';
 
 		if (!empty($supp_dom)) {
 			$icons .= "&nbsp;{$supp_dom}";
@@ -2611,9 +2764,10 @@ function convert_dns_reply_log($mode, $fields) {
 
 		// Default - Add to Blacklist
 		else {
+			$h_f6 = pfb_hsc($fields[6]);
 			$icons .= '&nbsp;<i class="fa-solid fa-plus icon-pointer" id="DNSBLWT|' . 'dnsbl_add|'
-				. $fields[6] . '|' . implode('|', $clists['dnsbl']['options']) . '" title="'
-				. "Add Domain [ {$fields[6]} ] to DNSBL" . '"></i>';
+				. $h_f6 . '|' . implode('|', $clists['dnsbl']['options']) . '" title="'
+				. "Add Domain [ {$h_f6} ] to DNSBL" . '"></i>';
 		}
 
 		if (!empty($ex_dom)) {
@@ -2621,25 +2775,39 @@ function convert_dns_reply_log($mode, $fields) {
 		}
 	}
 
+	// Timestamp / Type / Orig Type / Final Type / SRC IP / GeoIP printed verbatim
+	$fields[1]	= pfb_hsc($fields[1]);
+	$fields[2]	= pfb_hsc($fields[2]);
+	$fields[3]	= pfb_hsc($fields[3]);
+	$fields[4]	= pfb_hsc($fields[4]);
+	$fields[7]	= pfb_hsc($fields[7]);
+	$fields[9]	= pfb_hsc($fields[9]);
+
 	// Truncate long TTLs
 	$pfb_title5 = '';
-	if (strlen($fields[5]) >= 6) {
-		$pfb_title5	= $fields[5];
-		$fields[5]	= substr($fields[5], 0, 5) . "<small>...</small>";
+	if (mb_strlen($fields[5], 'UTF-8') >= 6) {
+		$pfb_title5	= pfb_hsc($fields[5]);
+		$fields[5]	= pfb_hsc(pfb_truncate($fields[5], 5)) . "<small>...</small>";
+	} else {
+		$fields[5]	= pfb_hsc($fields[5]);
 	}
 
 	// Truncate long Domain names
 	$pfb_title6 = '';
-	if (strlen($fields[6]) >= ($mode != 'unified' ? 45 : 30)) {
-		$pfb_title6	= $fields[6];
-		$fields[6]	= substr($fields[6], 0, ($mode != 'unified' ? 44 : 29)) . "<small>...</small>";
+	if (mb_strlen($fields[6], 'UTF-8') >= ($mode != 'Unified' ? 45 : 30)) {
+		$pfb_title6	= pfb_hsc($fields[6]);
+		$fields[6]	= pfb_hsc(pfb_truncate($fields[6], ($mode != 'Unified' ? 44 : 29))) . "<small>...</small>";
+	} else {
+		$fields[6]	= pfb_hsc($fields[6]);
 	}
 
 	// Truncate long Resolved names
 	$pfb_title8 = '';
-	if (strlen($fields[8]) >= 17) {
-		$pfb_title8	= $fields[8];
-		$fields[8]	= substr($fields[8], 0, 16) . "<small>...</small>";
+	if (mb_strlen($fields[8], 'UTF-8') >= 17) {
+		$pfb_title8	= pfb_hsc($fields[8]);
+		$fields[8]	= pfb_hsc(pfb_truncate($fields[8], 16)) . "<small>...</small>";
+	} else {
+		$fields[8]	= pfb_hsc($fields[8]);
 	}
 
 	if ($mode != 'Unified') {
@@ -2660,7 +2828,8 @@ function convert_dns_reply_log($mode, $fields) {
 		$style_bg = '';
 		$title = 'DNS Reply Event';
 		if ($fields[7] == '127.0.0.1') {
-			$bg = strpos(config_get_path('system/webgui/webguicss'), 'dark') ? $pfb['unireply2'] : $pfb['unireply'];
+			// foreign key: system/webgui/webguicss is a pfSense core key, not in registry
+			$bg = $pfb_webgui_dark ? $pfb['unireply2'] : $pfb['unireply'];
 			if ($bg != 'none') {
 				$style_bg = "style=\"background-color:{$bg}\"";
 			}
@@ -2683,15 +2852,119 @@ function convert_dns_reply_log($mode, $fields) {
 }
 
 
+/**
+ * Build the inner HTML for the IP alert Feed/Match cell.
+ *
+ * When both the feed name and matched IP/CIDR were re-evaluated (both $feed_new
+ * and $match_new are non-empty), groups the output by record: the struck
+ * previous pair first, then the current pair. When only one field changed the
+ * per-field layout is preserved, matching today's existing behaviour.
+ *
+ * All four parameters must already be HTML-escaped by the caller; $feed_new and
+ * $match_new must be empty strings when the corresponding field did not change.
+ */
+function pfb_ip_feed_match_cell(string $feed, string $feed_new, string $match, string $match_new): string {
+	if ($feed_new !== '' && $match_new !== '') {
+		// Both changed — group by record: struck previous pair, then current pair.
+		return "<s>{$feed}</s><br /><small><s>{$match}</s></small><br />{$feed_new}<br /><small>{$match_new}</small>";
+	}
+	elseif ($feed_new !== '') {
+		// Only feed changed — per-field layout.
+		return "<s>{$feed}</s><br />{$feed_new}<br /><small>{$match}</small>";
+	}
+	elseif ($match_new !== '') {
+		// Only match changed — per-field layout.
+		return "{$feed}<br /><small><s>{$match}</s><br />{$match_new}</small>";
+	}
+	// Neither changed.
+	return "{$feed}<br /><small>{$match}</small>";
+}
+
+
+/**
+ * Build the inner HTML for the DNSBL alert Feed/Group cell.
+ *
+ * Sibling of pfb_ip_feed_match_cell() for the DNSBL views. When a domain was
+ * previously blocked by a different feed AND a different group (both $prev_feed
+ * and $prev_group are non-empty), groups the output by record: the struck
+ * previous pair first, then the current pair. When only one of the two has a
+ * previous value the per-field layout is preserved, matching today's behaviour.
+ *
+ * All four parameters must already be HTML-escaped by the caller; $prev_feed and
+ * $prev_group are empty strings when there is no previous value for that field.
+ */
+function pfb_dnsbl_feed_group_cell(string $prev_feed, string $cur_feed, string $prev_group, string $cur_group): string {
+	if ($prev_feed !== '' && $prev_group !== '') {
+		// Both changed — group by record: struck previous pair, then current pair.
+		return "<s>{$prev_feed}</s><br /><small><s>{$prev_group}</s></small><br />{$cur_feed}<br /><small>{$cur_group}</small>";
+	}
+	elseif ($prev_feed !== '') {
+		// Only the feed changed — per-field layout.
+		return "<s>{$prev_feed}</s><br />{$cur_feed}<br /><small>{$cur_group}</small>";
+	}
+	elseif ($prev_group !== '') {
+		// Only the group changed — per-field layout.
+		return "{$cur_feed}<br /><small><s>{$prev_group}</s><br />{$cur_group}</small>";
+	}
+	// No previous value.
+	return "{$cur_feed}<br /><small>{$cur_group}</small>";
+}
+
+/**
+ * Render the Permit-Whitelist trash-can icon markup when $host is covered by
+ * one of the given ipwhitelist alias lists, else return NULL.
+ *
+ * Shared by both Alerts icon call sites that need this lookup (issue #798):
+ * the Suppression-icon gate's whitelist sub-path, and the standalone IP
+ * Whitelist Icon fallback. The NULL return also replaces the old $pfb_found
+ * flag as the caller's "not found" signal -- $pfb_found was left undefined
+ * (PHP 8 E_WARNING on read) whenever $wlists was empty.
+ */
+function pfb_whitelist_trash_icon(array $wlists, string $host, int $vtype, string $h_host, string $h_eval_ip): ?string {
+	if (empty($wlists)) {
+		return NULL;
+	}
+
+	foreach ($wlists as $atype => $permit_list) {
+		if (!isset($permit_list['data'][$host])) {
+			continue;
+		}
+
+		$w_line = rtrim($permit_list['data'][$host], "\x00..\x1F");
+		$supp_ip_txt = "Note:&emsp;The following IPv{$vtype} address is in a Permit Alias:\n\n"
+				. "Permitted IP:&emsp;[ " . pfb_hsc($w_line) . " ]\n"
+				. "Evaluated IP:&emsp;[ {$h_eval_ip} ]\n"
+				. "IP Aliasname:&emsp;[ " . pfb_hsc($atype) . " ]\n\n"
+
+				. "To remove this IP from the Whitelist, press 'OK'";
+
+		return '<i class="fa-solid fa-trash-can no-confirm icon-pointer" id="DNSBLWT|' . 'delete_ipwhitelist|' . $h_host
+				. '|' . pfb_hsc($atype) . '" title="' . $supp_ip_txt . '"></i>';
+	}
+
+	return NULL;
+}
+
+
 // Function to convert IP Logs (ip_block, ip_permit and ip_match).log -> Reports Tab
 function convert_ip_log($mode, $fields, $p_query_port, $rtype) {
-	global $pfb, $continents, $filterfieldsarray, $clists, $ip_unlock, $counter, $pfbentries, $skipcount, $dup, $ipfilterlimit, $ipfilterlimitentries;
+	global $pfb, $pfb_webgui_dark, $continents, $filterfieldsarray, $clists, $ip_unlock, $counter, $pfbentries, $skipcount, $dup, $ipfilterlimit, $ipfilterlimitentries;
 
 	if ($ipfilterlimit) {
 		return array(TRUE, '');
 	}
 
-	$alert_ip = $pfb_query = $pfb_matchtitle = '';
+	// issue #1369 (ADR-38 Amendment 3): only the current 23-field feature-row /
+	// 24-field Unified-row schema is supported on the read path -- no back-compat
+	// for log entries (owner decision). ANY other field count, including every
+	// pre-upgrade legacy row still on disk, is skipped here silently (no PHP
+	// warnings/notices) BEFORE the timestamp shift below or any indexed field
+	// access -- see pfb_ip_log_row_schema_ok() (pfblockerng_extra.inc).
+	if (!pfb_ip_log_row_schema_ok($fields, $mode)) {
+		return array(FALSE, '');
+	}
+
+	$alert_ip = '';
 	$src_icons = $dst_icons = $feed_new = $eval_new = $alias_new = '';
 
 	// Reorder timestamp field for Filter fields functionality
@@ -2722,7 +2995,9 @@ function convert_ip_log($mode, $fields, $p_query_port, $rtype) {
 		[15]	= Feed Name
 		[16]	= gethostbyaddr resolved hostname
 		[17]	= Client Hostname
-		[18]	= ASN					*/
+		[18]	= ASN
+		[19]	= ASN Domain	(issue #1369)
+		[20]	= ASN Name	(issue #1369)		*/
 
 	// If alerts filtering is selected, process filters as required.
 	if ($pfb['filterlogentries']) {
@@ -2749,9 +3024,10 @@ function convert_ip_log($mode, $fields, $p_query_port, $rtype) {
 	// Cleanup port output
 	if ($fields[6] == 'ICMP' || $fields[6] == 'ICMPV6') {
 		$srcport = '';
+		$dstport = '';
 	} else {
-		$srcport = ":{$fields[9]}";
-		$dstport = ":{$fields[10]}";
+		$srcport = ":" . pfb_hsc($fields[9]);
+		$dstport = ":" . pfb_hsc($fields[10]);
 	}
 
 	// IPv4 or IPv6 event
@@ -2762,127 +3038,44 @@ function convert_ip_log($mode, $fields, $p_query_port, $rtype) {
 		$vtype = 4;
 	}
 
-	// GeoIP event
-	$pfb_geoip = FALSE;
-	if (isset($continents[ substr($fields[13], 0, -3) ])) {
-		$pfb_geoip = TRUE;
-	}
+	$attribution = pfb_ip_render_attribution($fields);
+	$host = $attribution['host'];
+	$hostname = $attribution['hostname'];
+	$pfb_geoip = $attribution['pfb_geoip'];
+	$fields[15] = $attribution['field15'];
+	$mask = $attribution['mask'];
+	$feed_new = $attribution['feed_new'];
+	$eval_new = $attribution['eval_new'];
+	$alias_new = $attribution['alias_new'];
+	$pfb_matchtitle = $attribution['pfb_matchtitle'];
 
-	// Determine if Proofpoint IQRisk based Feed (Based on ':' in Feedname - Defines Feed Category)
-	$et_header = FALSE;
-	if (strpos($fields[15], ':') !== FALSE) {
-		$data = explode(':', $fields[15]);
-		$fields[15]	= $data[1];
-		$et_header	= TRUE;
-	}
+	// HTML-encode the resolved/DHCP hostnames before they are printed as cell text.
+	$hostname['src'] = pfb_hsc($hostname['src']);
+	$hostname['dst'] = pfb_hsc($hostname['dst']);
 
-	// Inbound event
-	if ($fields[11] == 'in') {
-		$host		= $fields[7];
-		$hostname	= array( 'src' => $fields[16], 'dst' => $fields[17] );
-	}
-
-	// Outbound event
-	else {
-		$host		= $fields[8];
-		$hostname	= array( 'src' => $fields[17], 'dst' => $fields[16] );
-	}
-
-	// Determine folder type
-	$query_prefix	= "|";
-	$query		= "{$pfb['grep']}";
-	$query_host	= "{$fields[15]}.txt";
-
-	if ($pfb_geoip) {
-		$folder = "{$pfb['ccdir']}/*.txt";
-	} elseif ($et_header) {
-		$folder		= "{$pfb['etdir']}/*.txt";
-		$query		= '';
-		$query_host	= '';
-		$query_prefix	= '';
-	} elseif ($fields[3] == 'block') {
-		$folder = "{$pfb['denydir']}/*.txt {$pfb['nativedir']}/*.txt";
-	} elseif ($fields[3] == 'pass') {
-		$folder = "{$pfb['permitdir']}/*.txt {$pfb['nativedir']}/*.txt";
-	} elseif ($fields[3] == 'match') {
-		$folder = "{$pfb['matchdir']}/*.txt {$pfb['nativedir']}/*.txt";
-	}
-
-	// IPv4 IP address mask
-	$mask = '';
-	if ($pfb_ipv4) {
-		$mask = strstr($fields[14], '/', FALSE) ?: '/32';
-	}
-
-	// Determine if event IP still exists in Feed Aliastable
-	$validate = '';
-	if ($fields[14] != 'Unknown' && $fields[15] != 'Unknown') {
-		$q_ip = str_replace('.', '\.', $fields[14]);
-
-		$query_esc	= escapeshellarg($query);
-		$query_host_esc	= escapeshellarg($query_host);
-		$q_ip_esc	= escapeshellarg("^{$q_ip}");
-
-		$validate	= exec("/usr/bin/find {$folder} -type f {$query_prefix} {$query_esc} {$query_host_esc} | xargs {$pfb['grep']} {$q_ip_esc} 2>&1");
-	}
-
-	// ASN - Add to GeoIP column
-	if ($pfb['asn_reporting'] != 'disabled' && !empty($fields[18]) && $fields[18] != 'Unknown') {
-
-		if (strpos($fields[18], '|') !== FALSE) {
-			$fields[18]	= str_replace('ASN:', '', $fields[18]);
-			$asn		= explode('|', $fields[18], 3);
-			$fields[18] = "<span title=\"|" . htmlspecialchars($asn[2]) . "\">" . htmlspecialchars($asn[1]) . "</span>";
-		} else {
-			$fields[18] = '';
-		}
+	// ASN - Add to GeoIP column. issue #1369 (ADR-38 Amendment 3): the ASN
+	// number renders directly from its own plain CSV column ([18]); the
+	// tooltip is built from the separate ASN Domain/Name columns ([19]/[20])
+	// -- no more pipe-blob explode()/label-stripping.
+	if ($pfb['asn_reporting'] != 'disabled' && !empty($fields[18]) && $fields[18] != 'Unknown' && $fields[18] != 'null') {
+		$asn_domain = $fields[19] ?? '';
+		$asn_name   = $fields[20] ?? '';
+		$asn_title  = "domain:  {$asn_domain} | name:  {$asn_name}";
+		$fields[18] = "<span title=\"" . pfb_hsc($asn_title) . "\">" . pfb_hsc($fields[18]) . "</span>";
 	}
 	else {
 		$fields[18] = '';
 	}
 
-	// Determine if a different IP/CIDR is now alerting on this host
-	if (empty($validate)) {
-		$pfb_query = find_reported_header($host, $folder);
+	// v4-only, /32|/24 -- ADR-53 (issue #422) narrowed this to feed ONLY the
+	// legacy whitelist-fallback quirk gate below (issue #1412 moved the
+	// Unlock/Lock icon gate onto the family/mask-agnostic condition the
+	// Suppression icon already uses, so $mask_unlock -- its only other
+	// reader -- is retired).
+	$mask_suppression = FALSE;
 
-		if ($pfb_query[0] == 'Unknown') {
-			$feed_new	= 'Not listed!';
-			$pfb_matchtitle = 'This IP is not currently listed!';
-		} else {
-			$feed_new	= $pfb_query[0];
-		}
-
-		if ($pfb_query[1] == 'Unknown') {
-			$mask		= '';
-			$eval_new	= 'Not listed!';
-		}
-		else {
-			if ($pfb_ipv4) {
-				$mx	= explode('/', $pfb_query[1]);
-				$mask	= empty($mx[1]) ? '/32' : "/{$mx[1]}";
-			}
-			$eval_new	= $pfb_query[1];
-		}
-
-		// Determine if IP is in a new Aliastable
-		$q_ip = str_replace('.', '\.', $eval_new);
-		$q_ip_esc = escapeshellarg("^{$q_ip}");
-		$validate = exec("/usr/bin/find {$pfb['aliasdir']}/*.txt -type f | xargs {$pfb['grep']} {$q_ip_esc} 2>&1");
-		$validate = ltrim(strrchr(strstr(strstr($validate, ':', TRUE), '.txt', TRUE), '/'), '/');
-		if ($validate != $fields[13]) {
-			$alias_new = $validate;
-		}
-	}
-
-	$mask_suppression	= FALSE;
-	$mask_unlock		= FALSE;
-
-	if ($pfb_ipv4) {
-		if ($mask == '/32' || $mask == '/24') {
-			$mask_suppression = TRUE;
-		} elseif (substr($mask, strrpos($mask, '/') + 1) > 24) {
-			$mask_unlock = TRUE;
-		}
+	if ($pfb_ipv4 && ($mask == '/32' || $mask == '/24')) {
+		$mask_suppression = TRUE;
 	}
 
 	$table = $fields[13];
@@ -2895,155 +3088,132 @@ function convert_ip_log($mode, $fields, $p_query_port, $rtype) {
 		$eval_ip = $eval_new;
 	}
 
-	$alert_ip = '<a class="fa-solid fa-info icon-pointer" target="_blank" href="/pfblockerng/pfblockerng_threats.php?host=' .
-			$host . '" title="Click for Threat source IP Lookup for [ ' . $host . ' ]"></a>';
+	// HTML-encoded copies of the IP/alias tokens that get folded into the icon
+	// id/title/href markup below (the raw values stay for lookup paths).
+	$h_host		= pfb_hsc($host);
+	$h_eval_ip	= pfb_hsc($eval_ip);
+	$h_table	= pfb_hsc($table);
 
-	// Suppression Icon
+	$alert_ip = '<a class="fa-solid fa-info icon-pointer" target="_blank" rel="noopener noreferrer" href="/pfblockerng/pfblockerng_threats.php?host=' .
+			$h_host . '" title="Click for Threat source IP Lookup for [ ' . $h_host . ' ]"></a>';
+
+	// Suppression Icon -- any family, any mask (ADR-53 follow-up, issue #422).
+	// GeoIP rows stay excluded (maintainer constraint).
 	$supp_ip = $unlock_ip = '&nbsp;&nbsp;&nbsp;';
-	if ($rtype == 'Block' && $pfb_ipv4 && !$pfb_geoip && $mask_suppression) {
+	if ($rtype == 'Block' && !$pfb_geoip) {
 
-		$v4suppression32 = $v4suppression24 = FALSE; 
-		if ($pfb['supp'] == 'on') {
-			if (isset($clists['ipsuppression']['data'][$host . '/32'])) {
-				$w_line = rtrim($clists['ipsuppression']['data'][$host . '/32'], "\x00..\x1F");
-				$v4suppression32 = TRUE;
-			}
-
-			$ix = ip_explode($host);
-			if (isset($clists['ipsuppression']['data'][$ix[5]])) {
-				$w_line = rtrim($clists['ipsuppression']['data'][$ix[5]], "\x00..\x1F");
-				$v4suppression24 = TRUE;
+		$supp_key = ($vtype == 6) ? 'ipsuppression_v6' : 'ipsuppression';
+		$supp_match = NULL;
+		if (pfb_cfg_toggle_read($pfb['supp']) === PfbToggle::On) {
+			$supp_match = pfb_ip_suppressed_match($host, array_keys($clists[$supp_key]['data']));
+			if ($supp_match !== NULL) {
+				$w_line = rtrim($clists[$supp_key]['data'][$supp_match], "\x00..\x1F");
 			}
 		}
 
-		// Host is not in the Suppression List
-		if (!$v4suppression32 && !$v4suppression24) {
+		// Host is not covered by any Suppression entry
+		if ($supp_match === NULL) {
 
 			// Check if host is in a Permit Whitelist Alias
-			if ($clists['ipwhitelist' . $vtype]) {
-				$pfb_found = FALSE;
-				foreach ($clists['ipwhitelist' . $vtype] as $atype => $permit_list) {
-					if (isset($permit_list['data'][$host])) {
-						$w_line = rtrim($permit_list['data'][$host], "\x00..\x1F");
-						$pfb_found = TRUE;
-						break;
-					}
-				}
+			$supp_ip_wl = pfb_whitelist_trash_icon($clists['ipwhitelist' . $vtype], $host, $vtype, $h_host, $h_eval_ip);
 
-				// Host found in a Permit Whitelist Alias
-				if ($pfb_found) {
-					$supp_ip_txt = "Note:&emsp;The following IPv{$vtype} addresss is in a Permit Alias:\n\n"
-							. "Permitted IP:&emsp;[ {$w_line} ]\n"
-							. "Evaluated IP:&emsp;[ {$eval_ip} ]\n"
-							. "IP Aliasname:&emsp;[ {$atype} ]\n\n"
-
-							. "To remove this IP from the Whitelist, press 'OK'";
-
-					$supp_ip = '<i class="fa-solid fa-trash-can no-confirm icon-pointer" id="DNSBLWT|' . 'delete_ipwhitelist|' . $host
-							. '|' . $atype . '" title="' . $supp_ip_txt . '"></i>';
-				}
+			// Host found in a Permit Whitelist Alias
+			if ($supp_ip_wl !== NULL) {
+				$supp_ip = $supp_ip_wl;
 			}
 
 			// Add Suppression/Whitelist Icon
-			if (!$pfb_found) {
-				$permit_option = '';
-				if ($clists['ipwhitelist' . $vtype]) {
-					$permit_option = '|' . implode('|', $clists['ipwhitelist' . $vtype]['options']);
-				}
+			if ($supp_ip_wl === NULL) {
+				$permit_option = pfb_alerts_permit_option_suffix($clists['ipwhitelist' . $vtype] ?? NULL);
 
 				$supp_ip_txt  = "Note:&emsp;The following IPv{$vtype} was blocked:\n\n"
-						. "Blocked IP:&emsp;&emsp;[ {$host} ]\n"
-						. "Evaluated IP:&emsp;&nbsp;[ {$eval_ip} ]\n\n"
-						. "IP Aliasname:&emsp;[ {$table} ]\n"
+						. "Blocked IP:&emsp;&emsp;[ {$h_host} ]\n"
+						. "Evaluated IP:&emsp;&nbsp;[ {$h_eval_ip} ]\n\n"
+						. "IP Aliasname:&emsp;[ {$h_table} ]\n"
 						. "IP Feedname:&emsp;&nbsp;[ "
-						. (!empty($feed_new) ? $feed_new : $fields[15]) . " ]\n\n"
+						. pfb_hsc(!empty($feed_new) ? $feed_new : $fields[15]) . " ]\n\n"
 
 						. "Whitelisting Options:\n\n"
 						. "1) Suppress the IP. This will immediately remove the IP\n"
-						. "&emsp;and keep the IP suppressed until its removed from the customlist\n\n"
+						. "&emsp;and keep the IP suppressed until it's removed from the customlist\n\n"
 						. "2) Whitelist the IP to an existing 'Permit' Alias customlist. Ensure that this\n"
 						. "&emsp;Permit Alias/Rule is above the Block/Reject rules (Rule Order option)\n\n"
 						. "&emsp;If no 'Whitelist' is found, a default 'Whitelist' will be created.\n"
-						. "&emsp;A Force Update is required to add the associated Firewall Permit Rule!\n\n"
+						. "&emsp;A forced IP reload is required to add the associated Firewall Permit Rule: use 'Run Now' on 'Update' with 'Run Scope' set to 'IP' and 'Force' set to 'Parse'.\n\n"
 						. "Click 'OK' to continue";
 
-				$supp_ip = '<i class="fa-solid fa-plus icon-pointer" id="PFBIPSUP|' . 'add|' . $host
-						. '|' . $table . $permit_option
+				$supp_ip = '<i class="fa-solid fa-plus icon-pointer" id="PFBIPSUP|' . 'add|' . $h_host
+						. '|' . $h_table . $permit_option
 						. '" title="' . $supp_ip_txt . '"></i>';
 			}
 		}
 		else {
-			$supp_ip_txt = "Note:&emsp;The following IPv{$vtype} addresss is in a IP Suppression list:\n\n"
-					. "Suppressed IP:&emsp;[ {$w_line} ]\n"
-					. "Evaluated IP:&emsp;[ {$eval_ip} ]\n\n"
+			$supp_ip_txt = "Note:&emsp;The following IPv{$vtype} address is in a IP Suppression list:\n\n"
+					. "Suppressed IP:&emsp;[ " . pfb_hsc($w_line) . " ]\n"
+					. "Evaluated IP:&emsp;[ {$h_eval_ip} ]\n\n"
 
 					. "To remove this IP from the Suppression list, press 'OK'";
 
-			$supp_ip = '<i class="fa-solid fa-trash-can no-confirm icon-pointer" id="DNSBLWT|' . 'delete_ip|' . $host
-					. '|' . $table . '" title="' . $supp_ip_txt . '"></i>&emsp;';
+			$supp_ip = '<i class="fa-solid fa-trash-can no-confirm icon-pointer" id="DNSBLWT|' . 'delete_ip|' . $h_host
+					. '|' . $h_table . '" title="' . $supp_ip_txt . '"></i>&emsp;';
 		}
 	}
 
-	// Unlock/Lock Icon
-	if ($rtype == 'Block' && ($mask_suppression || $mask_unlock)) {
-		$tnote = "\n\nNote:\n&emsp;&emsp;&#8226; Unlocking IP(s) is temporary and may be automatically\n"
-			. "&emsp;&emsp;&emsp;re-locked on a Cron or Force command!\n"
+	// Unlock/Lock Icon -- ADR-53 parity (#1412): same eligibility as the
+	// Suppression icon above (any family, any mask -- $mask_suppression /
+	// the retired $mask_unlock were v4-only /24|/32 restrictions), and the
+	// SAME exact-host token the Suppression "+" posts ($host), never the
+	// possibly-CIDR $eval_ip a feed match can report; $ip_unlock is keyed by
+	// that same exact host (the package seam calls pfb_unlock() with $ip = the
+	// posted host). The stored table must match THIS
+	// row's table -- a host unlocked in another alias still shows the Unlock
+	// icon here.
+	if ($rtype == 'Block' && !$pfb_geoip) {
+		$tnote = "\n\nNote:\n&emsp;&emsp;&#8226; Unlocking is temporary; the next IP table reload locks the IP again.\n"
 			. "&emsp;&emsp;&#8226; Review Threat Source ( i ) Icons for further IP details.";
 
-		if (!isset($ip_unlock[$eval_ip])) {
-			$unlock_ip = '<i class="fa-solid fa-lock text-danger" id="IPULCK|' . $eval_ip . '|'  . $table
-					. '" title="Unlock IP: [ ' . $eval_ip . ' ] from Aliastable [ ' . $table . ' ]?'
+		if (($ip_unlock[$host] ?? NULL) !== $table) {
+			$unlock_ip = '<i class="fa-solid fa-lock text-danger" id="IPULCK|' . $h_host . '|'  . $h_table
+					. '" title="Unlock IP: [ ' . $h_host . ' ] from Aliastable [ ' . $h_table . ' ]?'
 					. $tnote . '" ></i>';
 		} else {
-			$unlock_ip = '<i class="fa-solid fa-unlock text-primary" id="IPLCK|' . $eval_ip . '|' . $table
-					. '" title="Re-Lock IP: [ ' . $eval_ip . ' ] back into Aliastable [ ' . $table . ' ]?'
+			$unlock_ip = '<i class="fa-solid fa-unlock text-primary" id="IPLCK|' . $h_host . '|' . $h_table
+					. '" title="Re-Lock IP: [ ' . $h_host . ' ] back into Aliastable [ ' . $h_table . ' ]?'
 					. $tnote . '" ></i>';
 		}
 	}
 
-	// IP Whitelist Icon
-	if (!$mask_suppression) {
+	// IP Whitelist Icon -- rows handled by the Suppression-icon gate above
+	// (Block, non-GeoIP) never reach this branch any more; the
+	// !$mask_suppression leg preserves today's behaviour unchanged for the
+	// rest (Match rows, GeoIP rows, Permit-alias rows).
+	if (!($rtype == 'Block' && !$pfb_geoip) && !$mask_suppression) {
 		if ($clists['ipwhitelist' . $vtype]) {
 
-			$pfb_found = FALSE;
-			foreach ($clists['ipwhitelist' . $vtype] as $atype => $permit_list) {
-				if (isset($permit_list['data'][$host])) {
-					$w_line = rtrim($permit_list['data'][$host], "\x00..\x1F");
-					$pfb_found = TRUE;
-					break;
-				}
-			}
+			$supp_ip_wl = pfb_whitelist_trash_icon($clists['ipwhitelist' . $vtype], $host, $vtype, $h_host, $h_eval_ip);
 
-			if ($pfb_found) {
-				$supp_ip_txt = "Note:&emsp;The following IPv{$vtype} addresss is in a Permit Alias:\n\n"
-						. "Permitted IP:&emsp;[ {$w_line} ]\n"
-						. "Evaluated IP:&emsp;[ {$eval_ip} ]\n"
-						. "IP Aliasname:&emsp;[ {$atype} ]\n\n"
-
-						. "To remove this IP from the Whitelist, press 'OK'";
-
-				$supp_ip = '<i class="fa-solid fa-trash-can no-confirm icon-pointer" id="DNSBLWT|' . 'delete_ipwhitelist|' . $host
-						. '|' . $atype . '" title="' . $supp_ip_txt . '"></i>';
+			if ($supp_ip_wl !== NULL) {
+				$supp_ip = $supp_ip_wl;
 			}
 			else {
 				$supp_ip_txt  = "Note:&emsp;The following IPv{$vtype} was blocked:\n\n"
-						. "Blocked IP:&emsp;&emsp;[ {$host} ]\n"
-						. "Evaluated IP:&emsp;&nbsp;[ {$eval_ip} ]\n\n"
-						. "IP Aliasname:&emsp;[ {$table} ]\n"
+						. "Blocked IP:&emsp;&emsp;[ {$h_host} ]\n"
+						. "Evaluated IP:&emsp;&nbsp;[ {$h_eval_ip} ]\n\n"
+						. "IP Aliasname:&emsp;[ {$h_table} ]\n"
 						. "IP Feedname:&emsp;&nbsp;[ "
-						. (!empty($feed_new) ? $feed_new : $fields[15]) . " ]\n\n"
+						. pfb_hsc(!empty($feed_new) ? $feed_new : $fields[15]) . " ]\n\n"
 
 						. "Whitelisting details:\n\n"
 						. "&#8226; To permit access to this Blocked IP, you can add it to any\n"
 						. "&emsp;existing 'Permit' Alias.\n\n"
 						. "&emsp;If no 'Whitelist' is found, a default 'Whitelist' will be created.\n"
-						. "&emsp;A Force Update is required to add the associated Firewall Permit Rule!\n\n"
+						. "&emsp;A forced IP reload is required to add the associated Firewall Permit Rule: use 'Run Now' on 'Update' with 'Run Scope' set to 'IP' and 'Force' set to 'Parse'.\n\n"
 						. "&#8226; Ensure that this Permit Alias/Rule is above the "
 						. "Block/Reject rules\n&emsp;(Rule Order option)\n\n"
 						. "Click 'OK' to continue";
 
-				$supp_ip = '<i class="fa-solid fa-plus-circle icon-pointer" id="PFBIPWHITE|' . $host
-						. '|' . implode('|', $clists['ipwhitelist' . $vtype]['options'])
+				$supp_ip = '<i class="fa-solid fa-plus-circle icon-pointer" id="PFBIPWHITE|' . $h_host
+						. pfb_alerts_permit_option_suffix($clists['ipwhitelist' . $vtype] ?? NULL)
 						. '" title="' . $supp_ip_txt . '"></i>';
 			}
 		}
@@ -3057,9 +3227,10 @@ function convert_ip_log($mode, $fields, $p_query_port, $rtype) {
 	// Threat port lookup
 	$query_port = '';
 	if ($p_query_port != $fields[10]) {
-		$query_port = '<a class="fa-solid fa-search icon-pointer" target="_blank" '
-				. 'href="/pfblockerng/pfblockerng_threats.php?port=' . $fields[10]
-				. '" title="Click for Threat Port Lookup [ ' . $fields[10] . ' ]"></a>';
+		$h_dstport_q = pfb_hsc($fields[10]);
+		$query_port = '<a class="fa-solid fa-search icon-pointer" target="_blank" rel="noopener noreferrer" '
+				. 'href="/pfblockerng/pfblockerng_threats.php?port=' . $h_dstport_q
+				. '" title="Click for Threat Port Lookup [ ' . $h_dstport_q . ' ]"></a>';
 	}
 
 	// Inbound event
@@ -3083,48 +3254,48 @@ function convert_ip_log($mode, $fields, $p_query_port, $rtype) {
 
 	// Add []'s to IPv6 addresses and add a zero-width space as soft-break opportunity after each colon if we have an IPv6 address (from Snort)
 	if ($fields[4] == 6) {
-		$fields[97] = '[' . str_replace(':', ':&#8203;', $fields[7]) . ']';
-		$fields[98] = '[' . str_replace(':', ':&#8203;', $fields[8]) . ']';
+		$fields[97] = '[' . str_replace(':', ':&#8203;', pfb_hsc($fields[7])) . ']';
+		$fields[98] = '[' . str_replace(':', ':&#8203;', pfb_hsc($fields[8])) . ']';
 	}
 	else {
-		$fields[97] = $fields[7];
-		$fields[98] = $fields[8];
+		$fields[97] = pfb_hsc($fields[7]);
+		$fields[98] = pfb_hsc($fields[8]);
 	}
 
-	if (strlen($fields[15]) >= 17) {
+	if (mb_strlen($fields[15], 'UTF-8') >= 17) {
 		if (!empty($pfb_matchtitle)) {
 			$pfb_matchtitle .= '&#013;';
 		}
-		$pfb_matchtitle .= "Feed: {$fields[15]}";
-		$fields[15]	= substr($fields[15], 0, 16) . "<small>...</small>";
-	}
-	if (strlen($feed_new) >= 17) {
-		if (!empty($pfb_matchtitle)) {
-			$pfb_matchtitle .= '&#013;';
-		}
-		$pfb_matchtitle .= "Feed new: {$feed_new}";
-		$feed_new	= substr($feed_new, 0, 16) . "<small>...</small>";
-	}
-
-	if (!empty($feed_new)) {
-		$fields[15]	= "<s>{$fields[15]}</s><br />{$feed_new}";
-	}
-
-	if (!empty($eval_new)) {
-		$fields[14]	= "<s>{$fields[14]}</s><br />{$eval_new}";
-	}
-
-	if (empty($fields[16])) {
-		$fields[16] = 'Unknown';
-	}
-	elseif (strlen($fields[16]) >= 22) {
-		$fields[16] = "<span title=\"{$fields[16]}\">" . substr($fields[16], 0, 21) . "<small>...</small></span>";
-	}
-
-	if (!empty($alias_new)) {
-		$rule = "<s>{$fields[13]}</s><br />{$alias_new}<br /><small>({$fields[0]})</small>";
+		$pfb_matchtitle .= "Feed: " . pfb_hsc($fields[15]);
+		$fields[15]	= pfb_hsc(pfb_truncate($fields[15], 16)) . "<small>...</small>";
 	} else {
-		$rule = "{$fields[13]}<br /><small>({$fields[0]})</small>";
+		$fields[15]	= pfb_hsc($fields[15]);
+	}
+	if (mb_strlen($feed_new, 'UTF-8') >= 17) {
+		if (!empty($pfb_matchtitle)) {
+			$pfb_matchtitle .= '&#013;';
+		}
+		$pfb_matchtitle .= "Feed new: " . pfb_hsc($feed_new);
+		$feed_new	= pfb_hsc(pfb_truncate($feed_new, 16)) . "<small>...</small>";
+	} else {
+		$feed_new	= pfb_hsc($feed_new);
+	}
+
+	$fields[14]		= pfb_hsc($fields[14]);
+	$feed_match_cell	= pfb_ip_feed_match_cell($fields[15], $feed_new, $fields[14], pfb_hsc($eval_new));
+
+	// Interface / Protocol / GeoIP code / Timestamp printed verbatim
+	$fields[2]	= pfb_hsc($fields[2]);
+	$fields[6]	= pfb_hsc($fields[6]);
+	$fields[12]	= pfb_hsc($fields[12]);
+	$fields[99]	= pfb_hsc($fields[99]);
+
+	$h_rule_alias	= pfb_hsc($fields[13]);
+	$h_rule_num	= pfb_hsc($fields[0]);
+	if (!empty($alias_new)) {
+		$rule = "<s>{$h_rule_alias}</s><br />" . pfb_hsc($alias_new) . "<br /><small>({$h_rule_num})</small>";
+	} else {
+		$rule = "{$h_rule_alias}<br /><small>({$h_rule_num})</small>";
 	}
 
 	$dup_cnt = '';
@@ -3144,19 +3315,23 @@ function convert_ip_log($mode, $fields, $p_query_port, $rtype) {
 			<td>{$dst_icons}</td>
 			<td>{$fields[98]}{$dstport}&emsp;{$query_port}<br /><small>{$hostname['dst']}</small></td>
 			<td>{$fields[12]}<br />{$fields[18]}</td>
-			<td title=\"{$pfb_matchtitle}\">{$fields[15]}<br /><small>{$fields[14]}</small></td>
+			<td title=\"{$pfb_matchtitle}\">{$feed_match_cell}</td>
 			</tr>");
 	}
 	else {
+		// foreign key: system/webgui/webguicss is a pfSense core key, not in registry
 		switch($rtype) {
 			case 'Block':
-				$bg = strpos(config_get_path('system/webgui/webguicss'), 'dark') ? $pfb['uniblock2'] : $pfb['uniblock'];
+				$bg = $pfb_webgui_dark ? $pfb['uniblock2'] : $pfb['uniblock'];
 				break;
 			case 'Permit':
-				$bg = strpos(config_get_path('system/webgui/webguicss'), 'dark') ? $pfb['unipermit2'] : $pfb['unipermit'];
+				$bg = $pfb_webgui_dark ? $pfb['unipermit2'] : $pfb['unipermit'];
 				break;
 			case 'Match':
-				$bg = strpos(config_get_path('system/webgui/webguicss'), 'dark') ? $pfb['unimatch2'] : $pfb['unimatch'];
+				$bg = $pfb_webgui_dark ? $pfb['unimatch2'] : $pfb['unimatch'];
+				break;
+			default:
+				$bg = '';
 				break;
 		}
 
@@ -3172,7 +3347,7 @@ function convert_ip_log($mode, $fields, $p_query_port, $rtype) {
 			<td><small>{$fields[2]}</small></td>
 			<td style=\"white-space: nowrap; text-align: center;\">{$dst_icons}</td>
 			<td>{$fields[98]}{$dstport}&emsp;{$query_port}<br /><small>{$hostname['dst']}</small></td>
-			<td title=\"{$pfb_matchtitle}\">{$fields[15]}<br /><small>{$fields[14]}</small></td>
+			<td title=\"{$pfb_matchtitle}\">{$feed_match_cell}</td>
 			<td>{$fields[12]}<br />{$fields[18]}</td>
 			</tr>");
 	}
@@ -3186,8 +3361,67 @@ function convert_ip_log($mode, $fields, $p_query_port, $rtype) {
 
 $pgtitle = array(gettext('Firewall'), gettext('pfBlockerNG'), gettext('Alerts'));
 $pglinks = array('', '/pfblockerng/pfblockerng_general.php', '@self');
+$shortcut_section = 'pfblockerng';
 include_once('head.inc');
+$pfb_unified_tint = $pfb_webgui_dark ? 'rgba(255,255,255,.06)' : 'rgba(0,0,0,.05)';
+?>
 
+<style>
+/* Stats panel: flex columns that shrink and wrap on narrow viewports */
+.pfb-stats-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}
+.pfb-stats-col {
+	flex: 1 1 480px;
+	min-width: 0;
+}
+/* Let the d3pie SVG scale fluidly within its column */
+.pfb-stats-col svg {
+	max-width: 100%;
+	height: auto;
+}
+
+@media print {
+	.pfb-stats-row { display: block; }
+	.pfb-stats-col {
+		width: 100% !important;
+		float: none !important;
+		height: auto !important;
+		overflow: visible !important;
+		page-break-inside: avoid;
+	}
+	.panel-body { overflow: visible !important; }
+	* { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+.pfb-unified tbody tr:nth-of-type(odd) {
+	background-image: linear-gradient(<?=$pfb_unified_tint?>, <?=$pfb_unified_tint?>);
+}
+</style>
+
+<script type="text/javascript">
+//<![CDATA[
+/* Set a viewBox on the fixed-size d3pie SVG so CSS max-width scales it
+   without distorting the annotated labels. */
+function pfbPieFluid(id) {
+	var el = document.getElementById(id);
+	if (!el) { return; }
+	var svg = el.querySelector('svg');
+	if (!svg) { return; }
+	var w = svg.getAttribute('width');
+	var h = svg.getAttribute('height');
+	if (w && h && !svg.getAttribute('viewBox')) {
+		svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+	}
+	svg.removeAttribute('width');
+	svg.removeAttribute('height');
+	svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+}
+//]]>
+</script>
+
+<?php
 // Define default Alerts Tab href link (Top row)
 $get_req = pfb_alerts_default_page();
 
@@ -3202,15 +3436,16 @@ if (isset($_REQUEST['savemsg'])) {
 
 
 $tab_array   = array();
-$tab_array[] = array(gettext('General'),	false,	'/pfblockerng/pfblockerng_general.php');
-$tab_array[] = array(gettext('IP'),		false,	'/pfblockerng/pfblockerng_ip.php');
-$tab_array[] = array(gettext('DNSBL'),		false,	'/pfblockerng/pfblockerng_dnsbl.php');
-$tab_array[] = array(gettext('Update'),		false,	'/pfblockerng/pfblockerng_update.php');
-$tab_array[] = array(gettext('Reports'),	true,	"/pfblockerng/pfblockerng_alerts.php{$get_req}");
-$tab_array[] = array(gettext('Feeds'),		false,	'/pfblockerng/pfblockerng_feeds.php');
-$tab_array[] = array(gettext('Logs'),		false,	'/pfblockerng/pfblockerng_log.php');
-$tab_array[] = array(gettext('Sync'),		false,	'/pfblockerng/pfblockerng_sync.php');
-display_top_tabs($tab_array, true);
+$tab_array[] = array(gettext('General'),	FALSE,	'/pfblockerng/pfblockerng_general.php');
+$tab_array[] = array(gettext('IP'),		FALSE,	'/pfblockerng/pfblockerng_ip.php');
+$tab_array[] = array(gettext('DNS'),		FALSE,	'/pfblockerng/pfblockerng_dns_general.php');
+$tab_array[] = array(gettext('Update'),		FALSE,	'/pfblockerng/pfblockerng_update.php');
+$tab_array[] = array(gettext('Reports'),	TRUE,	"/pfblockerng/pfblockerng_alerts.php{$get_req}");
+$tab_array[] = array(gettext('Feeds'),		FALSE,	'/pfblockerng/pfblockerng_feeds.php');
+$tab_array[] = array(gettext('Logs'),		FALSE,	'/pfblockerng/pfblockerng_log.php');
+$tab_array[] = array(gettext('Sync'),		FALSE,	'/pfblockerng/pfblockerng_sync.php');
+pfb_software_add_tab($tab_array);
+display_top_tabs($tab_array, TRUE);
 
 $tab_array   = array();
 $tab_array[] = array(gettext('Unified'),		$active['unified'],	'/pfblockerng/pfblockerng_alerts.php?view=unified');
@@ -3219,15 +3454,14 @@ $tab_array[] = array(gettext('IP Block Stats'),		$active['ip_block'],	'/pfblocke
 $tab_array[] = array(gettext('IP Permit Stats'),	$active['ip_permit'],	'/pfblockerng/pfblockerng_alerts.php?view=ip_permit_stat');
 $tab_array[] = array(gettext('IP Match Stats'),		$active['ip_match'],	'/pfblockerng/pfblockerng_alerts.php?view=ip_match_stat');
 
-if ($pfb['dnsbl_mode'] == 'dnsbl_python') {
-	$tab_array[] = array(gettext('DNS Reply'),		$active['reply'],		'/pfblockerng/pfblockerng_alerts.php?view=reply');
-	$tab_array[] = array(gettext('DNS Reply Stats'),	$active['dnsbl_reply_stat'],	'/pfblockerng/pfblockerng_alerts.php?view=dnsbl_reply_stat');
-}
+$tab_array[] = array(gettext('DNS Reply'),		$active['reply'],		'/pfblockerng/pfblockerng_alerts.php?view=reply');
+$tab_array[] = array(gettext('DNS Reply Stats'),	$active['dnsbl_reply_stat'],	'/pfblockerng/pfblockerng_alerts.php?view=dnsbl_reply_stat');
 $tab_array[] = array(gettext('DNSBL Block Stats'),	$active['dnsbl'],	'/pfblockerng/pfblockerng_alerts.php?view=dnsbl_stat');
-display_top_tabs($tab_array, true);
+display_top_tabs($tab_array, TRUE);
+pfb_print_pending_changes_box();
 
 // Create Form
-$form = new Form(false);
+$form = new Form(FALSE);
 $form->setAction('/pfblockerng/pfblockerng_alerts.php');
 
 if ($alert_summary && strpos($alert_view, 'ip_') !== FALSE) {
@@ -3236,10 +3470,9 @@ if ($alert_summary && strpos($alert_view, 'ip_') !== FALSE) {
 	$section->addInput(new Form_StaticText(
 		'Links',
 		'<small>'
-		. '<a href="/firewall_aliases.php" target="_blank">Firewall Alias</a>&emsp;'
-		. '<a href="/firewall_rules.php" target="_blank">Firewall Rules</a>&emsp;'
-		. '<a href="/status_logs_filter.php" target="_blank">Firewall Logs</a></small>'
-		. "{$extra_txt}"
+		. '<a href="/firewall_aliases.php" target="_blank" rel="noopener noreferrer">Firewall Alias</a>&emsp;'
+		. '<a href="/firewall_rules.php" target="_blank" rel="noopener noreferrer">Firewall Rules</a>&emsp;'
+		. '<a href="/status_logs_filter.php" target="_blank" rel="noopener noreferrer">Firewall Logs</a></small>'
 	));
 	$form->add($section);
 }
@@ -3301,9 +3534,9 @@ $group->add(new Form_Checkbox(
 	'alertrefresh',
 	'Auto-Refresh',
 	NULL,
-	($alertrefresh == 'on' ? TRUE : FALSE),
+	$alertrefresh === PfbToggle::On,
 	'on'
-))->setHelp('Auto&nbsp;Refresh')->setAttribute('title', 'Select to \'Auto-Refresh\' Alerts page every 60 seconds.');
+))->setHelp('Auto-Refresh')->setAttribute('title', 'Select to \'Auto-Refresh\' Alerts page every 60 seconds.');
 
 // Remove 'Save' button when Alert Filtering is enabled to avoid saving incorrect filter entries
 if (!$pfb['filterlogentries']) {
@@ -3336,7 +3569,7 @@ $group->add(new Form_Select(
 	$options_pfbmaxtable
 ))->setHelp('Select the maximum Stat Table entries to display');
 
-if ($pfb['dnsbl'] == 'on') {
+if ($pfb['dnsbl'] === PfbToggle::On) {
 	$group->add(new Form_Select(
 		'pfbextdns',
 		'DNS lookup',
@@ -3357,7 +3590,7 @@ $group->add(new Form_Input(
 ))->setHelp('IP Filter Limit Entries')
   ->setAttribute('title', 'Enter number of \'Filter Limit Entries\' to view. Set to \'0\' to disable');
 
-if ($pfb['dnsbl'] == 'on') {
+if ($pfb['dnsbl'] === PfbToggle::On) {
 	$group->add(new Form_Input(
 		'dnsblfilterlimitentries',
 		'DNSBL Filter Limit',
@@ -3366,7 +3599,9 @@ if ($pfb['dnsbl'] == 'on') {
 		['min' => 0, 'max' => 2000]
 	))->setHelp('DNSBL Filter Limit Entries')
 	  ->setAttribute('title', 'Enter number of \'DNSBL Filter Limit Entries\' to view. Set to \'0\' to disable');
+}
 
+if (pfb_dns_reply_log_active()) {
 	$group->add(new Form_Input(
 		'dnsfilterlimitentries',
 		'DNS Reply Filter Limit',
@@ -3378,115 +3613,45 @@ if ($pfb['dnsbl'] == 'on') {
 }
 $section->add($group);
 
+$uni_dnsbl_on = $pfb['dnsbl'] === PfbToggle::On;
+
 $group = new Form_Group('Unified Log: Light Background Theme. Enter \'none\' to disable.');
-$group->add(new Form_Input(
-	'uniblock',
-	'',
-	'text',
-	$pfb['uniblock'],
-	['placeholder' => '#FFF9C4']
-))->setHelp('IP Block Event color')
-  ->setAttribute('style', "background: {$pfb['uniblock']}")
-  ->setWidth(2);
-
-$group->add(new Form_Input(
-	'unipermit',
-	'',
-	'text',
-	$pfb['unipermit'],
-	['placeholder' => '#80CBC4']
-))->setHelp('IP Permit Event color')
-  ->setAttribute('style', "background: {$pfb['unipermit']}")
-  ->setWidth(2);
-
-$group->add(new Form_Input(
-	'unimatch',
-	'',
-	'text',
-	$pfb['unimatch'],
-	['placeholder' => '#B3E5FC']
-))->setHelp('IP Match Event color')
-  ->setAttribute('style', "background: {$pfb['unimatch']}")
-  ->setWidth(2);
-
-if ($pfb['dnsbl'] == 'on') {
+foreach ($uni_defaults as $u_type => $u_cfg) {
+	if ($u_cfg['gated'] && !$uni_dnsbl_on) {
+		continue;
+	}
+	$u_key = "uni{$u_type}";
 	$group->add(new Form_Input(
-		'unidnsbl',
+		$u_key,
 		'',
 		'text',
-		$pfb['unidnsbl'],
-		['placeholder' => '#EF9A9A']
-	))->setHelp('DNSBL Block Event color')
-	  ->setAttribute('style', "background: {$pfb['unidnsbl']}")
-	  ->setWidth(2);
-
-	$group->add(new Form_Input(
-		'unireply',
-		'',
-		'text',
-		$pfb['unireply'],
-		['placeholder' => '#E8E8E8']
-	))->setHelp('DNS Reply Event color (Resolver only)')
-	  ->setAttribute('style', "background: {$pfb['unireply']}")
+		$pfb[$u_key],
+		['placeholder' => $u_cfg['light_default']]
+	))->setHelp($u_cfg['light_help'])
+	  ->setAttribute('style', "background: {$pfb[$u_key]}")
 	  ->setWidth(2);
 }
 $section->add($group);
 
 $group = new Form_Group('Unified Log: Dark Background Theme. Enter \'none\' to disable.');
-$group->add(new Form_Input(
-	'uniblock2',
-	'',
-	'text',
-	$pfb['uniblock2'],
-	['placeholder' => '#83791D']
-))->setHelp('IP Block Event color')
-  ->setAttribute('style', "background: {$pfb['uniblock2']}; color: white;")
-  ->setWidth(2);
-
-$group->add(new Form_Input(
-	'unipermit2',
-	'',
-	'text',
-	$pfb['unipermit2'],
-	['placeholder' => '#3B8780']
-))->setHelp('IP Permit Event color')
-  ->setAttribute('style', "background: {$pfb['unipermit2']}; color: white;")
-  ->setWidth(2);
-
-$group->add(new Form_Input(
-	'unimatch2',
-	'',
-	'text',
-	$pfb['unimatch2'],
-	['placeholder' => '#42809D']
-))->setHelp('IP Match Event color')
-  ->setAttribute('style', "background: {$pfb['unimatch2']}; color: white;")
-  ->setWidth(2);
-
-if ($pfb['dnsbl'] == 'on') {
+foreach ($uni_defaults as $u_type => $u_cfg) {
+	if ($u_cfg['gated'] && !$uni_dnsbl_on) {
+		continue;
+	}
+	$u_key = "uni{$u_type}2";
 	$group->add(new Form_Input(
-		'unidnsbl2',
+		$u_key,
 		'',
 		'text',
-		$pfb['unidnsbl2'],
-		['placeholder' => '#E84E4E']
-	))->setHelp('DNSBL Block Event color')
-	  ->setAttribute('style', "background: {$pfb['unidnsbl2']}; color: white;")
-	  ->setWidth(2);
-
-	$group->add(new Form_Input(
-		'unireply2',
-		'',
-		'text',
-		$pfb['unireply2'],
-		['placeholder' => '#54585E']
-	))->setHelp('DNS Reply Event color')
-	  ->setAttribute('style', "background: {$pfb['unireply2']}; color: white;")
+		$pfb[$u_key],
+		['placeholder' => $u_cfg['dark_default']]
+	))->setHelp($u_cfg['dark_help'])
+	  ->setAttribute('style', "background: {$pfb[$u_key]}; color: white;")
 	  ->setWidth(2);
 }
 $section->add($group);
 
-if ($pfb['dnsbl'] == 'on' && $pfb['dnsbl_mode'] == 'dnsbl_python') {
+if (pfb_dns_reply_log_active()) {
 	$group = new Form_Group('DNS Reply Log Options');
 	$group->add(new Form_Select(
 		'pfbreplytypes',
@@ -3540,7 +3705,7 @@ $group->add(new Form_Input(
 	'text',
 	$pfbchart1,
 	['placeholder' => '#0C6197']
-))->setHelp('Two-Tone<br />Zero Hour bar color')
+))->setHelp('<strong>Two-Tone</strong>: midnight bar color')
   ->setAttribute('style', "background: {$pfbchart1}; color: white;")
   ->setWidth(2);
 
@@ -3550,7 +3715,7 @@ $group->add(new Form_Input(
 	'text',
 	$pfbchart2,
 	['placeholder' => '#7A7A7A']
-))->setHelp('Two-Tone<br />Other Hour bar color')
+))->setHelp('<strong>Two-Tone</strong>: other-hour bar color')
   ->setAttribute('style', "background: {$pfbchart2}; color: white;")
   ->setWidth(2);
 $section->add($group);
@@ -3586,7 +3751,7 @@ $group->add(new Form_Select(
   ->setAttribute('style', 'width: auto; overflow: hidden;')
   ->setAttribute('size', 15);
 
-if ($pfb['dnsbl'] == 'on') {
+if ($pfb['dnsbl'] === PfbToggle::On) {
 	$group->add(new Form_Select(
 		'pfbdnsblstat',
 		'Disabled DNSBL Stats',
@@ -3596,7 +3761,9 @@ if ($pfb['dnsbl'] == 'on') {
 	))->setHelp("Select the <strong>DNSBL Stat</strong> table(s) to hide")
 	  ->setAttribute('style', 'width: auto; overflow: hidden;')
 	  ->setAttribute('size', 14);
+}
 
+if (pfb_dns_reply_log_active()) {
 	$group->add(new Form_Select(
 		'pfbdnsblreplystat',
 		'Disabled DNS Reply Stats',
@@ -3730,7 +3897,7 @@ if (!$alert_summary && ($alert_title != 'DNS Reply')) {
 	  ->setwidth(2);
 	$section->add($group);
 
-	if ($pfb['dnsbl'] == 'on') {
+	if ($pfb['dnsbl'] === PfbToggle::On) {
 		$group = new Form_Group('DNSBL');
 		$group->add(new Form_Input(
 			'filterlogentries_dnsbldate',
@@ -3753,7 +3920,7 @@ if (!$alert_summary && ($alert_title != 'DNS Reply')) {
 			'DNSBL - Domain',
 			'text',
 			$filterfieldsarray[1][8]
-		))->setAttribute('title', 'Enter filter \'Enter filter \'Domain\'.');
+		))->setAttribute('title', 'Filter by domain');
 
 		$group->add(new Form_Input(
 			'filterlogentries_dnsblsrcip',
@@ -3786,7 +3953,7 @@ if (!$alert_summary && ($alert_title != 'DNS Reply')) {
 		))->setAttribute('title', 'Enter filter \'Group name\'.');
 		$section->add($group);
 
-		$f19_title = ($pfb['dnsbl_mode'] == 'dnsbl_python' ? gettext("DNSBL: Blocking Type") : gettext("DNSBL: Domain/Referer|URI|Agent"));
+		$f19_title = (gettext("DNSBL: Blocking Type"));
 		$group = new Form_Group(NULL);
 		$group->add(new Form_Input(
 			'filterlogentries_dnsbltype',
@@ -3807,77 +3974,75 @@ if (!$alert_summary && ($alert_title != 'DNS Reply')) {
 
 if (!$alert_summary && ($alert_title == 'DNS Reply' || $alert_title == 'Unified Logs')) {
 
-	if ($pfb['dnsbl_mode'] == 'dnsbl_python') {
-		$group = new Form_Group('DNS Reply');
-		$group->add(new Form_Input(
-			'filterlogentries_replydate',
-			'Reply - Date',
-			'text',
-			$filterfieldsarray[2][89]
-		))->setAttribute('title', 'Enter filter \'DNS Reply Date\'.');
+	$group = new Form_Group('DNS Reply');
+	$group->add(new Form_Input(
+		'filterlogentries_replydate',
+		'Reply - Date',
+		'text',
+		$filterfieldsarray[2][89]
+	))->setAttribute('title', 'Enter filter \'DNS Reply Date\'.');
 
-		$group->add(new Form_Input(
-			'filterlogentries_replydomain',
-			'Reply - Domain',
-			'text',
-			$filterfieldsarray[2][85]
-		))->setAttribute('title', 'Enter filter \'DNS Reply Domain\'.');
-		$section->add($group);
+	$group->add(new Form_Input(
+		'filterlogentries_replydomain',
+		'Reply - Domain',
+		'text',
+		$filterfieldsarray[2][85]
+	))->setAttribute('title', 'Enter filter \'DNS Reply Domain\'.');
+	$section->add($group);
 
-		$group = new Form_Group(NULL);
-		$group->add(new Form_Input(
-			'filterlogentries_replysrcip',
-			'Reply - Source IP',
-			'text',
-			$filterfieldsarray[2][86]
-		))->setAttribute('title', 'Enter filter \'DNS Reply SRC IP\'.');
+	$group = new Form_Group(NULL);
+	$group->add(new Form_Input(
+		'filterlogentries_replysrcip',
+		'Reply - Source IP',
+		'text',
+		$filterfieldsarray[2][86]
+	))->setAttribute('title', 'Enter filter \'DNS Reply SRC IP\'.');
 
-		$group->add(new Form_Input(
-			'filterlogentries_replydstip',
-			'Reply - Resolved IP',
-			'text',
-			$filterfieldsarray[2][87]
-		))->setAttribute('title', 'Enter filter \'DNS Resolved IP\'.');
+	$group->add(new Form_Input(
+		'filterlogentries_replydstip',
+		'Reply - Resolved IP',
+		'text',
+		$filterfieldsarray[2][87]
+	))->setAttribute('title', 'Enter filter \'DNS Resolved IP\'.');
 
-		$group->add(new Form_Input(
-			'filterlogentries_replygeoip',
-			'Reply - GeoIP',
-			'text',
-			$filterfieldsarray[2][88]
-		))->setAttribute('title', 'Enter filter \'DNS Reply GeoIP\'.')
-		  ->setwidth(2);
-		$section->add($group);
+	$group->add(new Form_Input(
+		'filterlogentries_replygeoip',
+		'Reply - GeoIP',
+		'text',
+		$filterfieldsarray[2][88]
+	))->setAttribute('title', 'Enter filter \'DNS Reply GeoIP\'.')
+	  ->setwidth(2);
+	$section->add($group);
 
-		$group = new Form_Group(NULL);
-		$group->add(new Form_Input(
-			'filterlogentries_replytype',
-			'Reply - Type',
-			'text',
-			$filterfieldsarray[2][81]
-		))->setAttribute('title', 'Enter filter \'DNS Reply Type\'.');
+	$group = new Form_Group(NULL);
+	$group->add(new Form_Input(
+		'filterlogentries_replytype',
+		'Reply - Type',
+		'text',
+		$filterfieldsarray[2][81]
+	))->setAttribute('title', 'Enter filter \'DNS Reply Type\'.');
 
-		$group->add(new Form_Input(
-			'filterlogentries_replyorec',
-			'Reply - Original Record',
-			'text',
-			$filterfieldsarray[2][82]
-		))->setAttribute('title', 'Enter filter \'DNS Reply Orig Record\'.');
+	$group->add(new Form_Input(
+		'filterlogentries_replyorec',
+		'Reply - Original Record',
+		'text',
+		$filterfieldsarray[2][82]
+	))->setAttribute('title', 'Enter filter \'DNS Reply Orig Record\'.');
 
-		$group->add(new Form_Input(
-			'filterlogentries_replyrec',
-			'Reply - DNS Record',
-			'text',
-			$filterfieldsarray[2][83]
-		))->setAttribute('title', 'Enter filter \'DNS Reply Record\'.');
+	$group->add(new Form_Input(
+		'filterlogentries_replyrec',
+		'Reply - DNS Record',
+		'text',
+		$filterfieldsarray[2][83]
+	))->setAttribute('title', 'Enter filter \'DNS Reply Record\'.');
 
-		$group->add(new Form_Input(
-			'filterlogentries_replyttl',
-			'Reply - TTL',
-			'text',
-			$filterfieldsarray[2][84]
-		))->setAttribute('title', 'Enter filter \'DNS Reply TTL\'.');
-		$section->add($group);
-	}
+	$group->add(new Form_Input(
+		'filterlogentries_replyttl',
+		'Reply - TTL',
+		'text',
+		$filterfieldsarray[2][84]
+	))->setAttribute('title', 'Enter filter \'DNS Reply TTL\'.');
+	$section->add($group);
 }
 
 if (!$alert_summary) {
@@ -3912,11 +4077,11 @@ if (!$alert_summary) {
 	$group = new Form_Group(NULL);
 	$group->add(new Form_StaticText(
 		'',
-		'( Save disabled during <strong>Apply Filter</strong>)'
+		'Saving is disabled while <strong>Apply Filter</strong> is active.'
 		. '&emsp;<div class="infoblock">'
-		. '<h6>Regex Style Matching Only! Do not prefix/suffix field with a backslash! <a href="https://regexr.com/" target="_blank">Regular Expression Help link</a>. '
-		. 'Precede with exclamation (!) as first character to exclude match.)</h6>'
-		. '<h6>Example: ( ^80$ - Match Port 80, ^80$|^8080$ - Match both port 80 & 8080 )</h6>'
+		. '<p>Filters use regular expressions (<a href="https://regexr.com/" target="_blank" rel="noopener noreferrer">regular expression help</a>). '
+		. 'Do not wrap a filter in backslashes. Prefix it with <code>!</code> to exclude matches.</p>'
+		. '<dl><dt><code>^80$</code></dt><dd>Match port 80.</dd><dt><code>^80$|^8080$</code></dt><dd>Match port 80 or 8080.</dd></dl>'
 		. '</div>'
 	));
 	$section->add($group);
@@ -3925,7 +4090,6 @@ if (!$alert_summary) {
 	$form->addGlobal(new Form_Input('dnsbl_customlist', 'dnsbl_customlist', 'hidden', ''));
 	$form->addGlobal(new Form_Input('table', 'table', 'hidden', ''));
 	$form->addGlobal(new Form_Input('descr', 'descr', 'hidden', ''));
-	$form->addGlobal(new Form_Input('cidr', 'cidr', 'hidden', ''));
 	$form->addGlobal(new Form_Input('ip', 'ip', 'hidden', ''));
 	$form->addGlobal(new Form_Input('addsuppress', 'addsuppress', 'hidden', ''));
 	$form->addGlobal(new Form_Input('addwhitelistdom', 'addwhitelistdom', 'hidden', ''));
@@ -3971,24 +4135,13 @@ if (!$alert_summary):
 			<tbody>
 	<?php
 			foreach ($data[0] as $entry => $type) {
-				if ($key == 0) {
-					$unlock = '<i class="fa-solid fa-unlock text-primary" id="IPLCK|' . htmlspecialchars($entry) . '|' . $type
-							. '" title="Re-Lock ' . htmlspecialchars($data[1]) . ': [ ' . htmlspecialchars($entry) . ' ] back into Aliastable [ '
-							. htmlspecialchars($type) . ' ]? "></i>';
+				$kind = ($key == 0) ? 'ip' : 'dnsbl';
+				$actions = pfb_alerts_unlocked_entry_actions($kind, (string) $entry, (string) $type, $clists);
+				$alert = $actions['alert'];
+				$unlock = $actions['unlock'];
+				$supp = $actions['supp'];
 
-					$alert = '<a class="fa-solid fa-info icon-pointer" target="_blank"'
-							. ' href="/pfblockerng/pfblockerng_threats.php?host='
-							. htmlspecialchars($entry) . '" title="Click for Threat source IP Lookup for [ ' . htmlspecialchars($entry) . ' ]"></a>';
-				} else {
-					$unlock = '<i class="fa-solid fa-unlock text-primary" id="DNSBL_LCK|' . htmlspecialchars($entry) . '|' . htmlspecialchars($type)
-							. '" title="Re-Lock ' . htmlspecialchars($data[1]) . ': [ ' . htmlspecialchars($entry) . ' ] back into DNSBL? "></i>';
-
-					$alert = '<a class="fa-solid fa-info icon-pointer" target="_blank"'
-							. ' href="/pfblockerng/pfblockerng_threats.php?domain='
-							. htmlspecialchars($entry) . '" title="Click for Threat source Domain Lookup for [ ' . htmlspecialchars($entry) . ' ]"></a>';
-				}
-
-				print ("<tr><td>&nbsp;{$alert}&emsp;{$unlock}&emsp;" . htmlspecialchars($entry) . "</td><td>" . htmlspecialchars($type) . "</td></tr>");
+				print ("<tr><td>&nbsp;{$alert}&emsp;{$unlock}&emsp;{$supp}&emsp;" . htmlspecialchars($entry) . "</td><td>" . htmlspecialchars($type) . "</td></tr>");
 			}
 	?>
 			</tbody>
@@ -4029,26 +4182,27 @@ if (!$alert_summary):
 				'Match'		=> "{$pfb['ip_matchlog']}",
 				'Unified'	=> "{$pfb['unilog']}") as $logtype => $pfb_log ):
 
+		// $pfbentries gets a definite default here (issue #809, same approach as
+		// $folder above): every reachable path below overwrites it before the
+		// post-switch reads (the "Skip table output" gate, the Unified early-exit
+		// call, the <tfoot> message) -- the `continue 2` paths skip those reads too.
+		// The default makes that provable to PHPStan instead of relying on it to
+		// trace the switch/if/continue control flow.
+		$pfbentries = 0;
 
 		// Validate Alert view and Log type
 		switch ($alert_view) {
 			case 'alert':
-				if ($pfb['dnsbl'] == 'on') {
+				if ($pfb['dnsbl'] === PfbToggle::On) {
 					$pfbentries = "{$pfbdnscnt}";
 					if ($pfb['filterlogentries'] && $dnsblfilterlimitentries != 0) {
 						$pfbentries = $dnsblfilterlimitentries;
 					}
 
 					if ($logtype == 'DNSBL Block') {
-						if ($pfb['dnsbl_py_blacklist']) {
-							continue 2;
-						}
-						break;
+						continue 2;
 					}
 					elseif ($logtype == 'DNSBL Python') {
-						if (!$pfb['dnsbl_py_blacklist']) {
-							continue 2;
-						}
 						break;
 					}
 				}
@@ -4109,7 +4263,7 @@ if (!$alert_summary):
 <div class="panel panel-default" style="width: 100%;">
 	<div class="panel-heading">
 		<h2 class="panel-title">
-			<? if ($alertrefresh == 'on'): ?>
+			<? if ($alertrefresh === PfbToggle::On): ?>
 			<i class="fa-solid fa-pause-circle" id="PauseRefresh" " title="Pause Alerts Refresh"></i>&nbsp;
 			<? endif; ?>
 			<?=gettext($logtype)?><small>-&nbsp;<?=gettext('Last')?>&nbsp;<?=$pfbentries?>&nbsp;<?=gettext('Alert Entries')?></small>
@@ -4117,11 +4271,12 @@ if (!$alert_summary):
 	</div>
 	<div class="panel-body">
 		<div class="table-responsive">
-		<table style="width: 100%;" class="table table-striped table-hover table-compact sortable-theme-bootstrap" data-sortable>
+		<table style="width: 100%;" class="table table-striped table-hover table-compact sortable-theme-bootstrap<?= $logtype == 'Unified' ? ' pfb-unified' : '' ?>" data-sortable>
 
 	<?php
 		// Create Unified Report
 		$handle = FALSE;
+		$p_query_port = '';
 		if ($logtype == 'Unified' && file_exists("{$pfb_log}")) {
 	?>
 			<thead>
@@ -4139,9 +4294,24 @@ if (!$alert_summary):
 			</thead>
 			<tbody>
 	<?php
-			exec("/usr/bin/tail -r {$pfb_log} > {$pfb_log}.rev 2>&1");
-			if (($handle = @fopen("{$pfb_log}.rev", 'r')) !== FALSE) {
-				while (($fields = @fgetcsv($handle)) !== FALSE) {
+			// This loop reads the reversed log via a popen() stream (no on-disk .rev
+			// copy, issue #809) and breaks as soon as pfb_alerts_unified_scan_done()
+			// determines no converter (convert_dnsbl_log() / convert_dns_reply_log() /
+			// convert_ip_log()) can render another row -- see that helper for the exact
+			// non-filter/filter mode conditions. If any per-type filter-limit knob is 0
+			// (unlimited) its flag never sets and this still scans to EOF, exactly as before.
+			// issue #1369: every fgetcsv() call reading these logs (all 5 sites in this
+			// file) passes an explicit empty escape argument, matching the writer's
+			// pfb_asn_csv_fields()/fputcsv() -- a bare fgetcsv() defaults to a backslash
+			// escape char, which would mis-parse a literal backslash inside a quoted ASN
+			// domain/name field (RFC4180 has no escape char at all; PHP's default is a
+			// non-standard extension the two sides must agree on to round-trip).
+			if (($handle = @popen('/usr/bin/tail -r ' . escapeshellarg($pfb_log), 'r')) !== FALSE) {
+				while (($fields = @fgetcsv($handle, 0, ',', '"', '')) !== FALSE) {
+
+					if (pfb_alerts_unified_scan_done($pfb['filterlogentries'], $counter['Unified'], $pfbentries, $ipfilterlimit, $dnsblfilterlimit, $dnsfilterlimit)) {
+						break;
+					}
 
 					// Filter Unified Log for specific Log Types
 					if ($pfb['filterlogentries'] && !isset($filter_unified[$fields[0]])) {
@@ -4183,7 +4353,9 @@ if (!$alert_summary):
 					}
 				}
 			}
-			unlink_if_exists("{$pfb_log}.rev");
+			if ($handle) {
+				@pclose($handle);
+			}
 		}
 
 		// Process dns array for DNSBL and generate output
@@ -4201,9 +4373,10 @@ if (!$alert_summary):
 			</thead>
 			<tbody>
 	<?php
-			exec("/usr/bin/tail -r {$pfb_log} > {$pfb_log}.rev 2>&1");
-			if (($handle = @fopen("{$pfb_log}.rev", 'r')) !== FALSE) {
-				while (($fields = @fgetcsv($handle)) !== FALSE) {
+			// ADR-65: a single streaming pass -- rows render straight from their own
+			// logged fields now, so there is nothing left to batch-prefetch between passes.
+			if (($handle = @popen('/usr/bin/tail -r ' . escapeshellarg($pfb_log), 'r')) !== FALSE) {
+				while (($fields = @fgetcsv($handle, 0, ',', '"', '')) !== FALSE) {
 
 					// Remove and record duplicate entries
 					if ($fields[9] == '-') {
@@ -4217,9 +4390,8 @@ if (!$alert_summary):
 				}
 			}
 			if ($handle) {
-				@fclose($handle);
+				@pclose($handle);
 			}
-			unlink_if_exists("{$pfb_log}.rev");
 		}
 
 		// Process DNS Reply log and generate output
@@ -4241,9 +4413,8 @@ if (!$alert_summary):
 			</thead>
 			<tbody>
 	<?php
-			exec("/usr/bin/tail -r {$pfb_log} > {$pfb_log}.rev 2>&1");
-			if (($handle = @fopen("{$pfb_log}.rev", 'r')) !== FALSE) {
-				while (($fields = @fgetcsv($handle)) !== FALSE) {
+			if (($handle = @popen('/usr/bin/tail -r ' . escapeshellarg($pfb_log), 'r')) !== FALSE) {
+				while (($fields = @fgetcsv($handle, 0, ',', '"', '')) !== FALSE) {
 
 					// Suppress user-defined reply types
 					if (isset($pfbreplytypes) && isset($pfbreplytypes[$fields[2]])) {
@@ -4261,9 +4432,8 @@ if (!$alert_summary):
 				}
 			}
 			if ($handle) {
-				@fclose($handle);
+				@pclose($handle);
 			}
-			unlink_if_exists("{$pfb_log}.rev");
 		}
 
 		// Process Deny/Permit/Match and generate output
@@ -4288,16 +4458,152 @@ if (!$alert_summary):
 	<?php
 
 			$p_query_port = '';
-			exec("/usr/bin/tail -r {$pfb_log} > {$pfb_log}.rev 2>&1");
-			if (($handle = @fopen("{$pfb_log}.rev", 'r')) !== FALSE) {
-				while (($fields = @fgetcsv($handle)) !== FALSE) {
-					$last_fld = array_pop($fields);
+			// $rtype is set above (case 'alert' of the switch($alert_view) block, same
+			// $logtype iteration) whenever this Block/Permit/Match section is reached;
+			// PHPStan can't trace that correlation, so this coalesce is a runtime no-op
+			// that keeps every read below provably defined -- same idiom the two-pass
+			// branch below already uses.
+			$rtype = $rtype ?? '';
 
-					// Remove and record duplicate entries
-					if ($last_fld == '-') {
-						$dup[$rtype]++;
+			// issue #809 scope guard: batching below only runs when a finite row bound
+			// exists -- non-filter mode (bound $pfbentries), or filter mode with a real
+			// per-row limit ($ipfilterlimitentries != 0) AND real filter fields set.
+			// Otherwise the log genuinely scans to EOF (unbounded buffer unsafe), so both
+			// cases keep the single-pass streaming loop. See docs/misc/alerts-reports-pipeline.md.
+			// issue #1497: $ipfilterlimitentries is now an explicit top-of-page
+			// assignment (was a ${"$type"} variable-variable loop PHPStan couldn't
+			// trace), so it is provably defined here -- no coalesce needed.
+			$ip_two_pass = !$pfb['filterlogentries'] || ($ipfilterlimitentries != 0 && !empty($filterfieldsarray[0]));
+
+			if (!$ip_two_pass) {
+				if (($handle = @popen('/usr/bin/tail -r ' . escapeshellarg($pfb_log), 'r')) !== FALSE) {
+					while (($fields = @fgetcsv($handle, 0, ',', '"', '')) !== FALSE) {
+						$last_fld = array_pop($fields);
+
+						// Remove and record duplicate entries
+						if ($last_fld == '-') {
+							$dup[$rtype]++;
+							continue;
+						}
+
+						$convert_ip = convert_ip_log('non_unified', $fields, $p_query_port, $rtype);
+						if ($convert_ip[0]) {
+							break;
+						} else {
+							$p_query_port	= $convert_ip[1];
+						}
+					}
+				}
+				if ($handle) {
+					@pclose($handle);
+				}
+			} else {
+				// Two passes over the reversed log instead of one: render-time IP lookups for
+				// every buffered row are batched via pfb_ip_prefetch() instead of one-to-three
+				// exec()s per row. Buffer entries: array($fields, TRUE) (accepted row), int N
+				// (N dup-marker lines), or array('rej'=>TRUE,'dup'=>N) (a mixed dup/reject run
+				// collapsed to one gap marker). Bound + correctness proof:
+				// docs/misc/alerts-reports-pipeline.md; compression logic is
+				// pfb_alerts_ip_buffer_push() (pfblockerng.inc), pinned by AlertsBufferReplayTest.
+				$ip_buffered	  = array();
+				$ip_accepted_seen = 0;
+				if (($handle = @popen('/usr/bin/tail -r ' . escapeshellarg($pfb_log), 'r')) !== FALSE) {
+					while (($fields = @fgetcsv($handle, 0, ',', '"', '')) !== FALSE) {
+						$last_fld = array_pop($fields);
+
+						// Duplicate-marker line: extend the current run.
+						if ($last_fld == '-') {
+							pfb_alerts_ip_buffer_push($ip_buffered, 'dup');
+							continue;
+						}
+
+						// issue #1369: a legacy/malformed row's field count never matches
+						// the current schema -- fold it into the SAME gap-marker path as a
+						// filtered row, so it is never buffered and never reaches Pass 1.5's
+						// pfb_ip_render_query() (which assumes the current schema's fixed
+						// indices) or pfb_match_filter_field() below. convert_ip_log()'s own
+						// guard is a backstop for the OTHER two callers, not the only one here.
+						if (!pfb_ip_log_row_schema_ok($fields, 'non_unified')) {
+							pfb_alerts_ip_buffer_push($ip_buffered, 'reject');
+							continue;
+						}
+
+						// Filter-mode acceptance, replicated with the SAME function
+						// convert_ip_log() itself calls -- on a COPY, since Pass 2 must
+						// replay the buffered $fields UNMODIFIED (convert_ip_log() does this
+						// exact reorder itself, as its own first line).
+						$accepted = TRUE;
+						if ($pfb['filterlogentries']) {
+							$ip_copy = $fields;
+							$ip_copy[99] = array_shift($ip_copy);
+							$accepted = pfb_match_filter_field($ip_copy, $filterfieldsarray[0]);
+						}
+
+						// Rejected line: fold into a gap marker. The row's fields are
+						// deliberately NOT kept -- see the constant-effect argument above.
+						if (!$accepted) {
+							pfb_alerts_ip_buffer_push($ip_buffered, 'reject');
+							continue;
+						}
+
+						// Accepted row: buffered POST-dup-pop, PRE-reorder -- exactly the
+						// shape convert_ip_log() itself expects as input.
+						$ip_buffered[] = array($fields, TRUE);
+						$ip_accepted_seen++;
+
+						if ($ip_accepted_seen >= ($pfbentries + 1)) {
+							break;
+						}
+					}
+				}
+				if ($handle) {
+					@pclose($handle);
+				}
+
+				// Pass 1.5 (derive + batch): every ACCEPTED buffered row's lookups, via the
+				// SAME helper (pfb_ip_render_query()) the Pass 2 attribution seam calls
+				// -- so the two passes can never derive a different answer for the same row.
+				// int runs and gap markers carry no fields and are never looked up.
+				$ip_prefetch_rows = array();
+				foreach ($ip_buffered as $ip_entry) {
+					if (is_int($ip_entry) || isset($ip_entry['rej'])) {
 						continue;
 					}
+					list($ip_fields, ) = $ip_entry;
+
+					$ip_copy = $ip_fields;
+					$ip_copy[99] = array_shift($ip_copy);
+					$ip_rq = pfb_ip_render_query($ip_copy);
+
+					$ip_prefetch_rows[] = array(
+						'host'			=> $ip_rq['host'],
+						'folder'		=> $ip_rq['folder'],
+						'pfb_geoip'		=> $ip_rq['pfb_geoip'],
+						'validate_file_cmd'	=> $ip_rq['validate_file_cmd'],
+						'validate_cmd'		=> $ip_rq['validate_cmd'],
+						'eval_ip_raw'		=> $ip_copy[14],
+					);
+				}
+				pfb_ip_prefetch($ip_prefetch_rows);
+
+				// Pass 2 (render): replay the buffer in the same (reversed) order via
+				// pfb_alerts_ip_replay_step() (pfblockerng.inc; decode contract documented
+				// there), unit-pinned by AlertsBufferReplayTest -- 'render' rows replay through
+				// the unchanged convert_ip_log() loop body, whose attribution seam consults the
+				// batched pfb_ip_render_memos() first. $rtype was already coalesced above (the
+				// $ipfilterlimitentries coalesce note), so it is provably defined here.
+				foreach ($ip_buffered as $ip_entry) {
+					$ip_step = pfb_alerts_ip_replay_step($ip_entry);
+					if (isset($ip_step['dup_add'])) {
+						$dup[$rtype] += $ip_step['dup_add'];
+						continue;
+					}
+					if (isset($ip_step['gap'])) {
+						$dup[$rtype] = $ip_step['gap'];
+						$p_query_port = '';
+						continue;
+					}
+					$fields = $ip_step['render'];
 
 					$convert_ip = convert_ip_log('non_unified', $fields, $p_query_port, $rtype);
 					if ($convert_ip[0]) {
@@ -4307,15 +4613,25 @@ if (!$alert_summary):
 					}
 				}
 			}
-			if ($handle) {
-				@fclose($handle);
-			}
-			unlink_if_exists("{$pfb_log}.rev");
 		}
 	?>
 		</tbody>
 		<tfoot>
 	<?php
+		// $logtype only ever takes the seven literal keys of the foreach array above
+		// (issue #809's same reasoning as $pfbentries's default), so every case below
+		// is exhaustive in practice -- but PHPStan can't narrow the switch subject to
+		// that literal union, so it treats the (unreachable) default as leaving these
+		// unset. Behaviour-neutral defaults keep the post-switch reads provably defined.
+		$colspan = '';
+		$fcounter = 0;
+		$pfbfilterlimit = FALSE;
+		// $rtype is set above (case 'alert' of the switch($alert_view) block) whenever
+		// $logtype is 'Block'/'Permit'/'Match' -- the only way the case below is
+		// reached -- but the tbody's own coalesce above only runs when file_exists()
+		// gates it TRUE (a fresh-install log-not-yet-created iteration skips it), so
+		// this file-scope read needs its own no-op coalesce.
+		$rtype = $rtype ?? '';
 		switch ($logtype) {
 			case 'Block':
 			case 'Permit':
@@ -4343,11 +4659,13 @@ if (!$alert_summary):
 					if ($ipfilterlimit && $dnsblfilterlimit && $dnsfilterlimit) {
 						$pfbfilterlimit = TRUE;
 					}
+					$fcounter = 0;
 					foreach ($counter as $c) {
 						$fcounter += $c;
 					}
 				}
 				else {
+					$pfbfilterlimit = FALSE;
 					$fcounter = $counter['Unified'];
 				}
 				break;
@@ -4367,7 +4685,7 @@ if (!$alert_summary):
 			$fcounter = "{$fcounter} (IP/DNSBL/DNS Reply)";
 		}
 
-		print ("			<td {$colspan} style='font-size:10px; color: red; background-color: #F0F0F0;' >Found {$fcounter} Alert Entries{$msg}</td>");
+		print ("			<td {$colspan} style='font-size:10px; color: red; background-color: rgba(128, 128, 128, 0.2);' >Found {$fcounter} Alert Entries{$msg}</td>");
 		$fcounter = 0; $msg = '';
 	?>
 
@@ -4389,15 +4707,15 @@ if (!$alert_summary):
 		<dt><i class="fa-solid fa-info">&nbsp;</i></dt>
 			<dd><?=gettext('Links to Threat Source lookups');?></dd>
 		<dt><i class="fa-solid fa-plus"></i></dt>
-			<dd><?=gettext('Whitelist a IP/Domain');?></dd>
+			<dd><?=gettext('Whitelist an IP/Domain');?></dd>
 		<dt><i class="fa-solid fa-plus-circle"></i></dt>
-			<dd><?=gettext('Whitelist 1) A GeoIP or large CIDR IP or 2) A TLD Domain');?></dd>
+			<dd><?=gettext('Whitelist a GeoIP-blocked IP in a Permit list, or a domain blocked by <strong>Wildcard Blocking</strong>');?></dd>
 		<dt><i class="fa-regular fa-hand"></i></dt>
-			<dd><?=gettext('Domain is blocked by a whole TLD');?></dd>
+			<dd><?=gettext('Domain is blocked by a <strong>TLD Blacklist</strong> entry');?></dd>
 		<dt><i class="fa-solid fa-trash-can"></i></dt>
 			<dd><?=gettext('IP/Domain is already Whitelisted');?></dd>
 		<dt><i class="fa-regular fa-trash-can"></i></dt>
-			<dd><?=gettext('Domain is in the TLD Exclusion customlist');?></dd>
+			<dd><?=gettext('Domain is in the <strong>TLD Exclusion List</strong>');?></dd>
 		<dt><i class="fa-solid fa-lock text-danger"></i></dt>
 			<dd><?=gettext('IP/Domain is locked');?></dd>
 		<dt><i class="fa-solid fa-unlock"></i></dt>
@@ -4414,9 +4732,9 @@ elseif ($alert_summary):
 if (!$pfb['filterlogentries']):?>
 
 <form action="/pfblockerng/pfblockerng_alerts.php" method="post" name="iform_stats" id="iform_stats" class="form-horizontal">
-<script src="../vendor/d3/d3.min.js?v=<?=filemtime('/usr/local/www/vendor/d3/d3.min.js')?>"></script>
+<script src="../vendor/d3/d3.min.js?v=<?=pfb_file_mtime('/usr/local/www/vendor/d3/d3.min.js')?>"></script>
 <script src="../vendor/d3pie/d3pie.min.js"></script>
-<script src="../vendor/nvd3/nv.d3.min.js?v=<?=filemtime('/usr/local/www/vendor/nvd3/nv.d3.min.js')?>"></script>
+<script src="../vendor/nvd3/nv.d3.min.js?v=<?=pfb_file_mtime('/usr/local/www/vendor/nvd3/nv.d3.min.js')?>"></script>
 <link href="../vendor/nvd3/nv.d3.min.css" media="screen, projection" rel="stylesheet" type="text/css">
 
 <div class="panel panel-default">
@@ -4441,8 +4759,8 @@ $stats = array( 'dnsblchart'	=> array("DNSBL Event Timeline&emsp;<small>(Last <s
 		'dnsblgpblock'	=> array('Top Blocked Group',			'Found', 'DNSBL Group(s)',	FALSE, ''),
 		'dnsblfeed'	=> array('Top Feed',				'Found', 'Feed(s)',		FALSE, ''),
 		'dnsblip'	=> array('Top Source IP',			'Found', 'Source IP(s)',	FALSE, ''),
-		'dnsblagent'	=> array($pfb['dnsbl_py_blacklist'] ? 'Blocking Type' : 'Top User-Agent', 'Found',
-					$pfb['dnsbl_py_blacklist'] ? 'Type(s)' : 'User-Agent(s)',		FALSE, ''),
+		'dnsblagent'	=> array('Blocking Type', 'Found',
+					'Type(s)',		FALSE, ''),
 		'dnsbltld'	=> array('Top TLD',				'Found', 'TLD(s)',		FALSE, ''),
 		'dnsblwebtype'	=> array('Top Blocked Webpage Types',		'Found', 'Blocked Webpage Type(s)',	FALSE, ''),
 		'dnsblmode'	=> array('Top DNSBL Modes',			'Found', 'Blocked DNSBL Mode(s)',	FALSE, ''),
@@ -4489,9 +4807,7 @@ foreach ($stats as $stat_type => $stype):
 	if ($stat_type == 'ipasn' && $pfb['asn_reporting'] == 'disabled') {
 		continue;
 	}
-	elseif ($alert_view == 'dnsbl_stat' && substr($stat_type, 0,6) == 'python' && $pfb['dnsbl_mode'] != 'dnsbl_python') {
-		continue;
-	}
+
 
 	$topcount = $sumlines = 0;
 	if (!empty($alert_stats[$alert_view][$stat_type])) {
@@ -4521,7 +4837,7 @@ foreach ($stats as $stat_type => $stype):
 <div class="panel panel-default" id="Alert_Stats_<?=$stat_type?>" style="display: inline-block; width: 100%;">
 	<div class="panel-heading">
 		<h2 class="panel-title">
-			<? if ($alertrefresh == 'on'): ?>
+			<? if ($alertrefresh === PfbToggle::On): ?>
 			<i class="fa-solid fa-pause-circle" id="PauseRefresh" " title="Pause Alerts Refresh"></i>&nbsp;
 			<? endif; ?>
 
@@ -4563,7 +4879,8 @@ foreach ($stats as $stat_type => $stype):
 
 			<?php else: ?>
 
-			<div style="height: <?=$height;?>px; width: 50%; float: left; overflow-y: scroll;">
+			<div class="pfb-stats-row">
+			<div class="pfb-stats-col" style="height: <?=$height;?>px; overflow-y: scroll;">
 			<table class="table table-responsive table-bordered table-striped table-hover table-compact sortable-theme-bootstrap" data-sortable>
 
 				<thead>
@@ -4573,7 +4890,7 @@ foreach ($stats as $stat_type => $stype):
 
 						<?php if ($stype[3]): ?>
 						<th style="width: 2%; text-align: center;">
-							<?
+							<?php
 							$column_title = 'GeoIP';
 							if ($stat_type == 'dnsbldomain' || $stat_type == 'dnsblevald') {
 								$column_title = 'Type';
@@ -4589,10 +4906,13 @@ foreach ($stats as $stat_type => $stype):
 				</thead>
 				<tbody>
 					<?php
+					// issue #1495: default FALSE -- when the first non-chart stat category
+					// has no data (routine on a fresh install), the block below never runs,
+					// and $max_table_entries must still be defined for the tfoot check.
+					$max_table_entries = FALSE;
 					if (!empty($alert_stats[$alert_view][$stat_type])) {
 
 						$table_entries = 0;
-						$max_table_entries = FALSE;
 						foreach ($alert_stats[$alert_view][$stat_type] as $data => $data_count) {
 
 							if ($pfbmaxtable != 'max') {
@@ -4605,6 +4925,9 @@ foreach ($stats as $stat_type => $stype):
 
 							$alert_event = $btnsubmit = $query_port = $hostname = '';
 							$subdata = array();
+							// issue #1069: NULL until a trusted-literal branch below opts the
+							// final <td> out of escaping; otherwise it defaults to pfb_hsc($data).
+							$data_disp = NULL;
 
 							$filter_value = $data;
 							if ($stat_type == 'dnsbltld' || $stat_type == 'replytld' ||
@@ -4647,10 +4970,13 @@ foreach ($stats as $stat_type => $stype):
 							}
 
 							if ($stat_type != 'ipdirection') {
+								// issue #1069: filter_value/data are log-derived -- HTML-encode
+								// both attribute values.
 								$btnsubmit = '<button type="submit" class="fa-solid fa-filter button-icon"'
 										. " name=\"filterlogentries_submit_{$stat_type}\""
 										. " id=\"filterlogentries_submit_{$stat_type}\""
-										. " value=\"{$filter_value}\" title=\"Filter Alerts for [ {$data} ]\"></button>";
+										. " value=\"" . pfb_hsc($filter_value) . "\" title=\"Filter Alerts for [ "
+										. pfb_hsc($data) . " ]\"></button>";
 							}
 
 							// Collect GeoIP or DNSBL Type classification
@@ -4664,14 +4990,20 @@ foreach ($stats as $stat_type => $stype):
 									$data = $subdata[0];
 								}
 
+								// issue #1069: $data rides a URL query segment -- rawurlencode,
+								// not HTML-encode.
 								$alert_event = '<a class="fa-solid fa-info icon-pointer"'
-										. ' title="Click for Threat Lookup." target="_blank"'
-										. ' href="/pfblockerng/pfblockerng_threats.php?' . $stype[4] . '=' . $data . '"></a>';
+										. ' title="Click for Threat Lookup." target="_blank" rel="noopener noreferrer"'
+										. ' href="/pfblockerng/pfblockerng_threats.php?' . $stype[4] . '=' . rawurlencode($data) . '"></a>';
 							}
 
 							if ($stat_type == 'dnsbldatehr' || $stat_type == 'dnsbldatehrmin') {
+								// ISO bucket key is 2 space-tokens (date, hour[:min]), not the
+								// old 3-token "Mon D HH" shape -- label as "date (hour[:min])".
+								// issue #1057: a truncated/corrupt key has no 2nd token.
 								$d = explode (' ', $data);
-								$data = "{$d[0]} {$d[1]}&emsp;({$d[2]})";
+								$data = isset($d[1]) ? "{$d[0]}&emsp;({$d[1]})" : $d[0];
+								$data_disp = $data;	// program-generated date/hour token, trusted
 							}
 
 							if (!empty($data) && $data != 'Not available for HTTPS alerts') {
@@ -4679,29 +5011,26 @@ foreach ($stats as $stat_type => $stype):
 								// Report Local hostname if found
 								if ($stat_type == 'ipsrcipout' || $stat_type == 'ipdstipin') {
 									if (isset($local_hosts[$data])) {
-										$hostname = "&emsp;<small>( {$local_hosts[$data]} )</small>";
+										$hostname = "&emsp;<small>( " . pfb_hsc($local_hosts[$data]) . " )</small>";
 									}
 								}
 
 								// Get external IP hostname and Resolved hostname
 								elseif ($stat_type == 'ipsrcipin' || $stat_type == 'ipdstipout') {
-									$title = '';
-									if (strlen($subdata[2]) >= 45) {
-										$title = "title=\"{$subdata[2]}\"";
-										$subdata[2] = substr($subdata[2], 0, 45) . "<small>...</small>";
-									}
-									$hostname = "<br /><span $title}><small>{$subdata[2]}</small></span>";
+									$hostname = pfb_stat_hostname_cell($subdata[2]);
 								}
 							}
 
 							if ($stat_type == 'dnsblagent' && $data == 'Unknown') {
-								$data = $pfb['dnsbl_py_blacklist'] ? 'DNSBL Webserver/VIP' : 'Not available for HTTPS alerts';
+								$data = pfb_dnsbl_mechanism_labels()['enabled'];
+								$data_disp = $data;	// literal, trusted
 							}
 
 							if ($stat_type == 'ipdstport') {
-								$query_port = '&nbsp;<a class="fa-solid fa-search icon-pointer" target="_blank"'
-										. ' href="/pfblockerng/pfblockerng_threats.php?port=' . $data
-										. '" title="Click for Threat Port Lookup [ ' . $data . ' ]"></a>';
+								// issue #1069: href segment rawurlencode'd; title HTML-encoded.
+								$query_port = '&nbsp;<a class="fa-solid fa-search icon-pointer" target="_blank" rel="noopener noreferrer"'
+										. ' href="/pfblockerng/pfblockerng_threats.php?port=' . rawurlencode($data)
+										. '" title="Click for Threat Port Lookup [ ' . pfb_hsc($data) . ' ]"></a>';
 							}
 
 							elseif ($stat_type == 'ipdirection') {
@@ -4710,22 +5039,30 @@ foreach ($stats as $stat_type => $stype):
 								} else {
 									$data = 'Outbound packets';
 								}
+								$data_disp = $data;	// literal, trusted
 							}
 
 							if (empty($data)) {
 								$data = 'Unknown';
+								$data_disp = $data;	// literal, trusted
 							}
 
 							$td_type = '';
 							if ($stype[3]) {
-								$td_type = "<td style=\"text-align: center;\">{$subdata[1]}</td>";
+								$td_type = "<td style=\"text-align: center;\">" . pfb_hsc($subdata[1]) . "</td>";
+							}
+
+							// issue #1069: everything NOT opted into a trusted literal above is
+							// attacker-influenceable log/feed data -- HTML-encode it here.
+							if ($data_disp === NULL) {
+								$data_disp = pfb_hsc($data);
 							}
 
 							print ("<tr>
 								<td style=\"text-align: center; white-space: nowrap;\">{$alert_event}{$query_port}{$btnsubmit}</td>
 								<td style=\"text-align: right; padding-right: 15px;\">{$data_count}</td>
 								{$td_type}
-								<td style=\"white-space: nowrap;\">{$data}{$hostname}</td></tr>");
+								<td style=\"white-space: nowrap;\">{$data_disp}{$hostname}</td></tr>");
 						}
 					}
 					?>
@@ -4733,7 +5070,7 @@ foreach ($stats as $stat_type => $stype):
 			</table>
 			</div>
 
-			<div style="height: <?=$height;?>px; width: 50%; float: right;">
+			<div class="pfb-stats-col" style="height: <?=$height;?>px;">
 				<div id="pieChart_<?=$stat_type?>">
 				<?php
 					if ($topcount > 9) {
@@ -4746,13 +5083,14 @@ foreach ($stats as $stat_type => $stype):
 				?>
 				</div>
 			</div>
+			</div><!-- /.pfb-stats-row -->
 
 			<!-- Display max table extry limit, if found -->
 			<?php if ($max_table_entries): ?>
 			<div>
 				&emsp;
 				<span class="text-warning" style="font-size:12px; background-color: #424242;"
-					title="Table limit reached! Setting can be modified in widget Alert Settings, but may slow page refresh time.">
+					title="Table limit reached! Change the limit in 'Alert Settings' on 'Reports'; a higher limit slows page refresh.">
 					<small>Displaying [ <?= $pfbmaxtable; ?> ] entries.</small>
 				</span>
 			</div>
@@ -4770,7 +5108,7 @@ foreach ($stats as $stat_type => $stype):
 endif;
 
 // Refresh page every 60 secs
-if ($alertrefresh == 'on') {
+if ($alertrefresh === PfbToggle::On) {
 
 	$pageview = '?';
 	if ($pfb['filterlogentries']) {
@@ -4819,13 +5157,6 @@ if ($alertrefresh == 'on') {
 	}
 }
 
-function pfb_cmp($a, $b) {
-	if ($a == $b) {
-		return 0;
-	}
-	return ($a < $b) ? 1 : -1;
-}
-
 function pie_block($summary, $stat_type, $sumlines, $numsegments, $segcolors) {
 
 ?>
@@ -4843,11 +5174,11 @@ var pieChart_<?=$stat_type?> = new d3pie("pieChart_<?=$stat_type?>", {
 		"sortOrder": "value-asc",
 		"content": [
 <?php
-	uasort($summary, 'pfb_cmp');
+	uasort($summary, fn($a, $b) => $b <=> $a);
 	$k = array_keys($summary);
 	$numentries = 0;
 	for ($i = 0; $i < ($numsegments-1); $i++) {
-		if ($k[$i]) {
+		if ($k[$i] ?? NULL) {
 			$numentries++;
 			if ($i > 0) {
 				print(",\r\n");
@@ -4859,8 +5190,11 @@ var pieChart_<?=$stat_type?> = new d3pie("pieChart_<?=$stat_type?>", {
 			}
 
 			print("{");
-			print('"label": "' . $k[$i] . '", "value": ');
-			print($summary[$k[$i]]);
+			// issue #1069: log/feed-derived label into an inline <script>. pfb_js_string()
+			// JSON-encodes with JSON_HEX_* (quote/tag breakout) + JSON_INVALID_UTF8_SUBSTITUTE
+			// and a FALSE fallback, so a non-UTF8 byte can't emit invalid JS.
+			print('"label": ' . pfb_js_string((string) $k[$i]) . ', "value": ');
+			print((float) $summary[$k[$i]]);
 			print(', "color": "' . $segcolors[$i % $numsegments] . '"');
 			print("}");
 		}
@@ -4954,6 +5288,7 @@ var pieChart_<?=$stat_type?> = new d3pie("pieChart_<?=$stat_type?>", {
 		}
 	}
 });
+pfbPieFluid("pieChart_<?=$stat_type?>");
 //]]>
 </script>
 <?php
@@ -5105,47 +5440,30 @@ function ip_suppression() {
 	var description = prompt('Please enter Suppression description');
 	$('#descr').val(description);
 
-	if (cidr.value != '' && ip && table) {
+	if (ip && table) {
 		$('#addsuppress').val('true');
 		$('form').submit();
 	}
 }
 
+// ADR-53: the "+" now carves the reported host out of WHICHEVER table
+// entry currently contains it, at any mask -- the /32-vs-/24 mask-choice
+// dialog this function used to show is no longer meaningful (the backend
+// never reads a chosen mask, see pfblockerng_alerts.php's addsuppress
+// handler), so it goes straight to ip_suppression() once suppression is
+// confirmed enabled.
 function ip_suppression_type() {
 
 	// Confirm if the Suppression option is enabled
-	var is_supp = "<?=$pfb['supp']?>";
+	// issue #1887: the mirror is a PfbToggle — render its token explicitly (echoing
+	// the enum raw is a page-killing fatal: not convertible to string).
+	var is_supp = "<?=($pfb['supp'] === PfbToggle::On ? 'on' : 'off')?>";
 	if (is_supp != 'on') {
-		alert('The IP Suppression option has not been enabled. Please enable this option in the IP Tab to suppress this IP.');
-		$(this).dialog('close');
+		alert('Enable "Suppression" on "IP" to suppress this IP.');
+		return;
 	}
 
-	var buttons = {};
-	buttons['Suppress /32'] = function() {
-						$('#cidr').val('32');
-						$(this).dialog('close');
-						ip_suppression();
-						};
-	buttons['Suppress /24'] = function() {
-						$('#cidr').val('24');
-						$(this).dialog('close');
-						ip_suppression();
-						};
-	buttons['Cancel'] = function() { $(this).dialog('close'); };
-
-	$('<div></div>').appendTo('body')
-	.html('<div><h6>Select Suppression Mask:</h6></div>')
-	.dialog({
-		modal: true,
-		autoOpen: true,
-		resizable: false,
-		closeOnEscape: true,
-		width: 'auto',
-		title: 'Select a Suppression Mask:',
-		position: { my: 'top', at: 'top' },
-		buttons: buttons
-	}).css('background-color','#ffd700');
-	$("div[role=dialog]").find('button').addClass('btn-info btn-xs');
+	ip_suppression();
 }
 
 function add_description(mode) {
@@ -5193,7 +5511,7 @@ function add_description(mode) {
 				$(this).dialog('close');
 			}
 		}
-	}).css('background-color','#ffd700');
+	}).css({'background-color': '#ffd700', 'color': '#000000'});
 	$("div[role=dialog]").find('button').addClass('btn-info btn-xs');
 }
 
@@ -5220,10 +5538,10 @@ function select_whitelist(mode, permit_list) {
 
 	if (mode == 'ip') {
 		s_title = 'Whitelist';
-		d_title = 'Select a Permit Whitelist Alias:';
+		d_title = 'Select a Permit IP alias:';
 	} else {
-		s_title = 'DNSBL Customlist';
-		d_title = 'Select a DNSBL Customlist Group:';
+		s_title = 'DNSBL group Custom List';
+		d_title = 'Select the DNSBL group whose Custom List receives this domain:';
 	}
 
 	$('<div></div>').appendTo('body')
@@ -5238,7 +5556,7 @@ function select_whitelist(mode, permit_list) {
 		position: { my: 'top', at: 'top' },
 		width: 750,
 		buttons: buttons
-	}).css('background-color','#ffd700');
+	}).css({'background-color': '#ffd700', 'color': '#000000'});
 	$("div[role=dialog]").find('button').addClass('btn-info btn-xs');
 }
 
@@ -5372,6 +5690,7 @@ events.push(function() {
 		} else if (pieChart == 'replydate') {
 			pieChart_replydate.redraw();
 		}
+		pfbPieFluid('pieChart_' + pieChart);
 	})
 
 	$('[id^=DNSBLWT]').click(function(event) {
@@ -5385,6 +5704,7 @@ events.push(function() {
 				return;
 			}
 			var blocktype = '';		// Types (DNSBL/TLD/DNSBL TLD)
+			var button_text = '', descr_type = '';	// Local: never inherit the previous dialog's values
 
 			switch (DNSBLWT_Type) {
 				case 'add':
@@ -5407,6 +5727,7 @@ events.push(function() {
 				case 'tld':
 					$('#table').val(arr[3]);
 					var blocktype = arr[4];
+					button_text = 'Whitelist';
 					descr_type = 'dnsbl';
 					break;
 				case 'dnsbl_add':
@@ -5463,7 +5784,7 @@ events.push(function() {
 				title: 'Domain ' + button_text + 'ing:',
 				position: { my: 'top', at: 'top' },
 				buttons: buttons
-			}).css('background-color','#ffd700');
+			}).css({'background-color': '#ffd700', 'color': '#000000'});
 			$("div[role=dialog]").find('button').addClass('btn-info btn-xs');
 		}
 	});
@@ -5501,7 +5822,7 @@ events.push(function() {
 							$(this).dialog('close');
 						}
 					}
-				}).css('background-color','#ffd700');
+				}).css({'background-color': '#ffd700', 'color': '#000000'});
 				$("div[role=dialog]").find('button').addClass('btn-info btn-xs');
 			}
 			else {
