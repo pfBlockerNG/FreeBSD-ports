@@ -36,11 +36,23 @@ GH_ACCOUNT=	pfBlockerNG
 GH_PROJECT=	pfBlockerNG
 GH_TAGNAME=	v${PORTVERSION}
 # go/pfb_dns_gateway's vendored modules (files/modules.txt); the module sits beside src/ (= WRKSRC).
-GH_TUPLE=	golang:crypto:v0.54.0:golang_crypto/../go/pfb_dns_gateway/vendor/golang.org/x/crypto \
+GH_TUPLE=	dustin:go-humanize:v1.1.0:dustin_go_humanize/../go/pfb_dns_gateway/vendor/github.com/dustin/go-humanize \
+		golang:crypto:v0.54.0:golang_crypto/../go/pfb_dns_gateway/vendor/golang.org/x/crypto \
 		golang:net:v0.56.0:golang_net/../go/pfb_dns_gateway/vendor/golang.org/x/net \
-		golang:sys:v0.47.0:golang_sys/../go/pfb_dns_gateway/vendor/golang.org/x/sys \
+		golang:sys:v0.49.0:golang_sys/../go/pfb_dns_gateway/vendor/golang.org/x/sys \
+		golang:text:v0.44.0:golang_text/../go/pfb_dns_gateway/vendor/golang.org/x/text \
+		google:uuid:v1.6.0:google_uuid/../go/pfb_dns_gateway/vendor/github.com/google/uuid \
+		mattn:go-isatty:v0.0.24:mattn_go_isatty/../go/pfb_dns_gateway/vendor/github.com/mattn/go-isatty \
+		ncruces:go-strftime:v1.1.0:ncruces_go_strftime/../go/pfb_dns_gateway/vendor/github.com/ncruces/go-strftime \
+		oschwald:maxminddb-golang:v2.9.0:oschwald_maxminddb_golang/../go/pfb_dns_gateway/vendor/github.com/oschwald/maxminddb-golang/v2 \
 		pires:go-proxyproto:v0.15.0:pires_go_proxyproto/../go/pfb_dns_gateway/vendor/github.com/pires/go-proxyproto \
-		quic-go:quic-go:v0.64.0:quic_go_quic_go/../go/pfb_dns_gateway/vendor/github.com/quic-go/quic-go
+		quic-go:quic-go:v0.64.0:quic_go_quic_go/../go/pfb_dns_gateway/vendor/github.com/quic-go/quic-go \
+		remyoudompheng:bigfft:24d4a6f8daec:remyoudompheng_bigfft/../go/pfb_dns_gateway/vendor/github.com/remyoudompheng/bigfft
+USE_GITLAB=	nodefault
+GL_TUPLE=	cznic:libc:612e8b0f2f1b1923d5c24c08bc233722500499cd:cznic_libc/../go/pfb_dns_gateway/vendor/modernc.org/libc \
+		cznic:mathutil:28129eec384c30a304561c3c8779e4bb29cbff12:cznic_mathutil/../go/pfb_dns_gateway/vendor/modernc.org/mathutil \
+		cznic:memory:bb3d99379ed7361ae4c08f11c2876aef046c2a18:cznic_memory/../go/pfb_dns_gateway/vendor/modernc.org/memory \
+		cznic:sqlite:d04d243c4dfdb9f9fb19bd1c0c8c37d3923f0589:cznic_sqlite/../go/pfb_dns_gateway/vendor/modernc.org/sqlite
 DIST_SUBDIR=	${PORTNAME}
 
 # GitHub extracts to <project>-<version>/; production files live under src/
