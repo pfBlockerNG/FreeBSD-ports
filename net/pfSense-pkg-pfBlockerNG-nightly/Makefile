@@ -21,8 +21,8 @@ RUN_DEPENDS=	${LOCALBASE}/bin/mmdblookup:net/libmaxminddb \
 USES=		go:1.26+,modules,no_targets php python
 
 NO_ARCH=	yes
-# One static FreeBSD pfb-dns per architecture; dns_proxy/pfb_dns.sh picks this machine's at run time.
-NO_ARCH_IGNORE=	pfb-dns
+# One static FreeBSD pfb-dns and pfb-core per architecture; dns_proxy/pfb_dns.sh and rc.d/pfb_core.sh pick this machine's.
+NO_ARCH_IGNORE=	pfb-dns pfb-core
 
 CONFLICTS=	pfSense-pkg-pfBlockerNG pfSense-pkg-pfBlockerNG-testing pfSense-pkg-pfBlockerNG-edge
 
@@ -100,6 +100,12 @@ do-install:
 		${STAGEDIR}${PREFIX}/pkg/pfblockerng/dns_proxy/bin/freebsd-amd64
 	${INSTALL_PROGRAM} ${WRKDIR}/pfb-dns/freebsd-arm64/pfb-dns \
 		${STAGEDIR}${PREFIX}/pkg/pfblockerng/dns_proxy/bin/freebsd-arm64
+	${MKDIR} ${STAGEDIR}${PREFIX}/pkg/pfblockerng/core/bin/freebsd-amd64 \
+		${STAGEDIR}${PREFIX}/pkg/pfblockerng/core/bin/freebsd-arm64
+	${INSTALL_PROGRAM} ${WRKDIR}/pfb-dns/freebsd-amd64/pfb-core \
+		${STAGEDIR}${PREFIX}/pkg/pfblockerng/core/bin/freebsd-amd64
+	${INSTALL_PROGRAM} ${WRKDIR}/pfb-dns/freebsd-arm64/pfb-core \
+		${STAGEDIR}${PREFIX}/pkg/pfblockerng/core/bin/freebsd-arm64
 	${INSTALL_SCRIPT} ${WRKSRC}${PREFIX}/etc/rc.d/pfblockerng_repo_generate.sh \
 		${STAGEDIR}${PREFIX}/etc/rc.d
 	${INSTALL_SCRIPT} ${WRKSRC}${PREFIX}/pkg/pfblockerng/*.sh \
