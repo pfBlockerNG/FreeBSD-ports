@@ -1,6 +1,5 @@
 PORTNAME=	pfSense-pkg-pfBlockerNG-edge
-PORTVERSION=	4.0.0.b2
-PORTREVISION=	2
+PORTVERSION=	4.0.0.b3
 CATEGORIES=	net
 
 MAINTAINER=	coreteam@pfsense.org
