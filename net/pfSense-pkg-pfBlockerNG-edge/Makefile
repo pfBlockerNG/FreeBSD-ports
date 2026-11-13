@@ -18,7 +18,7 @@ RUN_DEPENDS=	${LOCALBASE}/bin/mmdblookup:net/libmaxminddb \
 		${PYTHON_PKGNAMEPREFIX}maxminddb>0:net/py-maxminddb@${PY_FLAVOR} \
 		${PYTHON_PKGNAMEPREFIX}charset-normalizer>0:textproc/py-charset-normalizer@${PY_FLAVOR}
 
-USES=		go:1.26+,modules,no_targets php python
+USES=		go:1.27+,modules,no_targets php python
 
 NO_ARCH=	yes
 # One static FreeBSD pfb-dns per architecture; dns_proxy/pfb_dns.sh picks this machine's at run time.
