@@ -40,7 +40,7 @@ GH_TAGNAME=	v${PORTVERSION}
 GH_TUPLE=	dustin:go-humanize:v1.1.0:dustin_go_humanize/../go/pfb_dns_gateway/vendor/github.com/dustin/go-humanize \
 		golang:crypto:v0.54.0:golang_crypto/../go/pfb_dns_gateway/vendor/golang.org/x/crypto \
 		golang:net:v0.56.0:golang_net/../go/pfb_dns_gateway/vendor/golang.org/x/net \
-		golang:sys:v0.49.0:golang_sys/../go/pfb_dns_gateway/vendor/golang.org/x/sys \
+		golang:sys:v0.50.0:golang_sys/../go/pfb_dns_gateway/vendor/golang.org/x/sys \
 		golang:text:v0.44.0:golang_text/../go/pfb_dns_gateway/vendor/golang.org/x/text \
 		google:uuid:v1.6.0:google_uuid/../go/pfb_dns_gateway/vendor/github.com/google/uuid \
 		mattn:go-isatty:v0.0.24:mattn_go_isatty/../go/pfb_dns_gateway/vendor/github.com/mattn/go-isatty \
