@@ -1,0 +1,13 @@
+TIMESTAMP = 1794652774
+SHA256 (pfSense-pkg-pfBlockerNG-edge/pfBlockerNG-pfBlockerNG-v4.0.0.b3_GH0.tar.gz) = 84299356c360eaab82332858401f63e881587427484b07df52de944c37508722
+SIZE (pfSense-pkg-pfBlockerNG-edge/pfBlockerNG-pfBlockerNG-v4.0.0.b3_GH0.tar.gz) = 15851701
+SHA256 (pfSense-pkg-pfBlockerNG-edge/golang-crypto-v0.54.0_GH0.tar.gz) = 030fb94a7d930ee06fa0234320101c9feffd5f68f8e936fd0c420110fb9bca49
+SIZE (pfSense-pkg-pfBlockerNG-edge/golang-crypto-v0.54.0_GH0.tar.gz) = 2158641
+SHA256 (pfSense-pkg-pfBlockerNG-edge/golang-net-v0.56.0_GH0.tar.gz) = c2097a7d1043e482386bf71f4df9d4e269685809ad057e1c42fa58e5dd8ff4ec
+SIZE (pfSense-pkg-pfBlockerNG-edge/golang-net-v0.56.0_GH0.tar.gz) = 1441099
+SHA256 (pfSense-pkg-pfBlockerNG-edge/golang-sys-v0.47.0_GH0.tar.gz) = 85733c6da0f8db2f380a4487f6229d44affcb69d7d4fc0e102b53214a248b14d
+SIZE (pfSense-pkg-pfBlockerNG-edge/golang-sys-v0.47.0_GH0.tar.gz) = 1550584
+SHA256 (pfSense-pkg-pfBlockerNG-edge/pires-go-proxyproto-v0.15.0_GH0.tar.gz) = 825275ddfad1a3ccc68bdafe9264eed4d056176a40285dfa1363649b445f59f8
+SIZE (pfSense-pkg-pfBlockerNG-edge/pires-go-proxyproto-v0.15.0_GH0.tar.gz) = 95598
+SHA256 (pfSense-pkg-pfBlockerNG-edge/quic-go-quic-go-v0.64.0_GH0.tar.gz) = da25b137b319d9f4d32ab170bf322fff40098ea9c3178ac74c2451dbb412490a
+SIZE (pfSense-pkg-pfBlockerNG-edge/quic-go-quic-go-v0.64.0_GH0.tar.gz) = 763720
