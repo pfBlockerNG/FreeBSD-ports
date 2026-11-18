@@ -199,8 +199,6 @@ do-install:
 		${STAGEDIR}${PREFIX}/pkg/pfblockerng
 	${INSTALL_DATA} ${WRKSRC}${PREFIX}/pkg/pfblockerng/pfb_dnsbl.youtube_restrictmoderate.conf \
 		${STAGEDIR}${PREFIX}/pkg/pfblockerng
-	${INSTALL_DATA} ${WRKSRC}${PREFIX}/pkg/pfblockerng/pfb_py_hsts.txt \
-		${STAGEDIR}${PREFIX}/pkg/pfblockerng
 	${INSTALL_DATA} ${WRKSRC}${DATADIR}/info.xml \
 		${STAGEDIR}${DATADIR}
 	@${REINPLACE_CMD} -i '' -e "s|%%PKGVERSION%%|${PKGVERSION}|" \
