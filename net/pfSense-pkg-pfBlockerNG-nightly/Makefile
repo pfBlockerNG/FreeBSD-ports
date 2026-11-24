@@ -34,8 +34,8 @@ USE_GITHUB=	yes
 GH_ACCOUNT=	pfBlockerNG
 GH_PROJECT=	pfBlockerNG
 GH_TAGNAME=	v${PORTVERSION}
-# go/pfb_dns_gateway's vendored modules (files/modules.txt), and pfBlockerNG/xxh3 and go4.org/netipx, which only
-# go/pfb_core vendors; the modules sit beside src/ (= WRKSRC).
+# go/pfb_dns_gateway's vendored modules (files/modules.txt), and go4.org/netipx, which only go/pfb_core vendors;
+# the modules sit beside src/ (= WRKSRC).
 GH_TUPLE=	dustin:go-humanize:v1.1.0:dustin_go_humanize/../go/pfb_dns_gateway/vendor/github.com/dustin/go-humanize \
 		go4org:netipx:3075585bcbeb:go4org_netipx/../go/pfb_core/vendor/go4.org/netipx \
 		golang:crypto:v0.54.0:golang_crypto/../go/pfb_dns_gateway/vendor/golang.org/x/crypto \
@@ -46,10 +46,10 @@ GH_TUPLE=	dustin:go-humanize:v1.1.0:dustin_go_humanize/../go/pfb_dns_gateway/ven
 		mattn:go-isatty:v0.0.24:mattn_go_isatty/../go/pfb_dns_gateway/vendor/github.com/mattn/go-isatty \
 		ncruces:go-strftime:v1.1.0:ncruces_go_strftime/../go/pfb_dns_gateway/vendor/github.com/ncruces/go-strftime \
 		oschwald:maxminddb-golang:v2.9.0:oschwald_maxminddb_golang/../go/pfb_dns_gateway/vendor/github.com/oschwald/maxminddb-golang/v2 \
-		pfBlockerNG:xxh3:v1.1.1-pfblockerng.1:pfblockerng_xxh3/../go/pfb_core/vendor/github.com/pfBlockerNG/xxh3 \
 		pires:go-proxyproto:v0.15.0:pires_go_proxyproto/../go/pfb_dns_gateway/vendor/github.com/pires/go-proxyproto \
 		quic-go:quic-go:v0.64.0:quic_go_quic_go/../go/pfb_dns_gateway/vendor/github.com/quic-go/quic-go \
-		remyoudompheng:bigfft:24d4a6f8daec:remyoudompheng_bigfft/../go/pfb_dns_gateway/vendor/github.com/remyoudompheng/bigfft
+		remyoudompheng:bigfft:24d4a6f8daec:remyoudompheng_bigfft/../go/pfb_dns_gateway/vendor/github.com/remyoudompheng/bigfft \
+		zeebo:xxh3:e05079abbd7d:zeebo_xxh3/../go/pfb_dns_gateway/vendor/github.com/zeebo/xxh3
 USE_GITLAB=	nodefault
 GL_TUPLE=	cznic:libc:612e8b0f2f1b1923d5c24c08bc233722500499cd:cznic_libc/../go/pfb_dns_gateway/vendor/modernc.org/libc \
 		cznic:mathutil:28129eec384c30a304561c3c8779e4bb29cbff12:cznic_mathutil/../go/pfb_dns_gateway/vendor/modernc.org/mathutil \
