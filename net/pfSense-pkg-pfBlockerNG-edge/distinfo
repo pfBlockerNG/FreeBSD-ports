@@ -1,6 +1,6 @@
-TIMESTAMP = 1795801525
-SHA256 (pfSense-pkg-pfBlockerNG-edge/pfBlockerNG-pfBlockerNG-4.0.0.b5-v4.0.0.b5_GH0.tar.gz) = 1d6d67ae83bc598e1331e4b5196e0f5e90366b4131aca00b83160318078d8f5b
-SIZE (pfSense-pkg-pfBlockerNG-edge/pfBlockerNG-pfBlockerNG-4.0.0.b5-v4.0.0.b5_GH0.tar.gz) = 12634893
+TIMESTAMP = 1795855821
+SHA256 (pfSense-pkg-pfBlockerNG-edge/pfBlockerNG-pfBlockerNG-4.0.0.b6-v4.0.0.b6_GH0.tar.gz) = 62e051a1122651d4c65017fa812d60fbb4dcc6e2229b524f923f3041cb3e5d50
+SIZE (pfSense-pkg-pfBlockerNG-edge/pfBlockerNG-pfBlockerNG-4.0.0.b6-v4.0.0.b6_GH0.tar.gz) = 12638667
 SHA256 (pfSense-pkg-pfBlockerNG-edge/golang-crypto-v0.54.0_GH0.tar.gz) = 030fb94a7d930ee06fa0234320101c9feffd5f68f8e936fd0c420110fb9bca49
 SIZE (pfSense-pkg-pfBlockerNG-edge/golang-crypto-v0.54.0_GH0.tar.gz) = 2158641
 SHA256 (pfSense-pkg-pfBlockerNG-edge/golang-net-v0.56.0_GH0.tar.gz) = c2097a7d1043e482386bf71f4df9d4e269685809ad057e1c42fa58e5dd8ff4ec
