@@ -34,9 +34,10 @@ USE_GITHUB=	yes
 GH_ACCOUNT=	pfBlockerNG
 GH_PROJECT=	pfBlockerNG
 GH_TAGNAME=	v${PORTVERSION}
-# go/pfb_dns_gateway's vendored modules (files/modules.txt), and go4.org/netipx, which only go/pfb_core vendors;
-# the modules sit beside src/ (= WRKSRC).
+# go/pfb_dns_gateway's vendored modules (files/modules.txt), and go4.org/netipx + github.com/gaissmai/bart,
+# which go/pfb_core (and go/pfb_crowdsec for bart) vendor; the modules sit beside src/ (= WRKSRC).
 GH_TUPLE=	dustin:go-humanize:v1.1.0:dustin_go_humanize/../go/pfb_dns_gateway/vendor/github.com/dustin/go-humanize \
+		gaissmai:bart:v0.30.0:gaissmai_bart/../go/pfb_core/vendor/github.com/gaissmai/bart \
 		go4org:netipx:3075585bcbeb:go4org_netipx/../go/pfb_core/vendor/go4.org/netipx \
 		golang:crypto:v0.54.0:golang_crypto/../go/pfb_dns_gateway/vendor/golang.org/x/crypto \
 		golang:net:v0.56.0:golang_net/../go/pfb_dns_gateway/vendor/golang.org/x/net \
